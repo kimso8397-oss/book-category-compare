@@ -183,6 +183,19 @@ def search_aladin(query: str, max_results: int = MAX_RESULTS) -> dict:
 
 
 # ---- 교보문고 -------------------------------------------------------------
+def _pick_first_clean(candidates: list[str]) -> str:
+    """후보 문자열 중 '[국내도서]' 같은 카테고리 뱃지(대괄호 감싼 것)는 건너뛰고
+    실제 값으로 보이는 것을 고릅니다."""
+    for c in candidates:
+        c = (c or "").strip()
+        if not c:
+            continue
+        if c.startswith("[") and c.endswith("]"):
+            continue  # 뱃지성 라벨은 제목이 아니에요
+        return c
+    return ""
+
+
 def _parse_kyobo_search_items(html: str, max_results: int) -> list[dict]:
     """
     교보문고 검색 결과 페이지에서 각 prod_item 블록마다
@@ -192,7 +205,7 @@ def _parse_kyobo_search_items(html: str, max_results: int) -> list[dict]:
     items: list[dict] = []
     seen: set[str] = set()
     for m in re.finditer(
-        r'<li[^>]*class="prod_item"[^>]*>(.*?)</li>\s*(?=<li|</ul)',
+        r'<li[^>]*class="[^"]*prod_item[^"]*"[^>]*>(.*?)</li>\s*(?=<li|</ul>)',
         html,
         re.DOTALL,
     ):
@@ -206,25 +219,31 @@ def _parse_kyobo_search_items(html: str, max_results: int) -> list[dict]:
             continue
         seen.add(iid)
 
-        # 제목: a 태그 내부에서 prod_name/prod_info/title 등 자주 쓰는 클래스를 먼저 시도,
-        # 실패하면 <img alt="..."> 를 사용.
-        title = (
-            _search(r'class="prod_name"[^>]*>([^<]+)<', block)
-            or _search(r'class="prod_info"[^>]*>\s*<span[^>]*>([^<]+)</span>', block)
-            or _search(r'<img[^>]+alt="([^"]+)"', block)
-        )
+        # 제목: img alt → prod_name → a[title] 순으로 시도, 대괄호 뱃지는 스킵
+        title = _pick_first_clean([
+            _search(r'<img[^>]+alt="([^"]+?)(?:\s*표지)?"', block),
+            _search(r'class="prod_name"[^>]*>([^<]+)<', block),
+            _search(r'class="prod_title"[^>]*>([^<]+)<', block),
+            _search(r'<a[^>]+href="[^"]*/detail/S\d+"[^>]+title="([^"]+)"', block),
+        ])
 
         author = (
-            _search(r'class="prod_author"[^>]*>([^<]+)<', block)
-            or _search(r'class="author"[^>]*>([^<]+)<', block)
+            _search(r'class="[^"]*prod_author[^"]*"[^>]*>([^<]+)<', block)
+            or _search(r'class="[^"]*author[^"]*"[^>]*>([^<]+)<', block)
         )
 
-        publisher = _search(r'class="prod_publish"[^>]*>([^<]+)<', block)
+        publisher = _search(r'class="[^"]*prod_publish[^"]*"[^>]*>([^<]+)<', block)
 
+        # lazy-load 이미지들: data-src, data-original, kbbfn 전용 속성들 등
         cover = (
             _search(r'<img[^>]+data-src="([^"]+)"', block)
+            or _search(r'<img[^>]+data-original="([^"]+)"', block)
+            or _search(r'<img[^>]+data-kbbfn-src="([^"]+)"', block)
             or _search(r'<img[^>]+src="([^"]+)"', block)
         )
+        # 빈 placeholder 이미지는 무시
+        if cover and ("placeholder" in cover.lower() or "blank" in cover.lower()):
+            cover = ""
 
         items.append(
             {
@@ -239,6 +258,51 @@ def _parse_kyobo_search_items(html: str, max_results: int) -> list[dict]:
         if len(items) >= max_results:
             break
     return items
+
+
+def _extract_kyobo_category(detail: str) -> tuple[str, str]:
+    """교보문고 상세 페이지에서 카테고리 경로를 여러 패턴으로 시도해 뽑습니다.
+    반환: (대표 카테고리, 전체 경로)"""
+    parts: list[str] = []
+
+    # 1) breadcrumb_list (예전 구조)
+    for pattern in (
+        r'<ol[^>]*class="[^"]*breadcrumb_list[^"]*"[^>]*>(.*?)</ol>',
+        r'<[ou]l[^>]*class="[^"]*breadcrumb[^"]*"[^>]*>(.*?)</[ou]l>',
+        r'<nav[^>]*class="[^"]*breadcrumb[^"]*"[^>]*>(.*?)</nav>',
+    ):
+        bc = _search(pattern, detail, re.DOTALL)
+        if bc:
+            found = re.findall(r">([^<>]+)</a>", bc)
+            parts = [p.strip() for p in found if p.strip() and p.upper() != "HOME"]
+            if parts:
+                break
+
+    # 2) "카테고리 분류/위치" 섹션 텍스트
+    if not parts:
+        cat_area = _search(
+            r"카테고리\s*(?:분류|위치)[^<]*<[^>]+>(.*?)</(?:ul|ol|div|section)",
+            detail,
+            re.DOTALL,
+        )
+        if cat_area:
+            found = re.findall(r">([^<>]+)</a>", cat_area)
+            parts = [p.strip() for p in found if p.strip() and p.upper() != "HOME"]
+
+    # 3) JSON-LD BreadcrumbList
+    if not parts:
+        ld = _search(
+            r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
+            detail,
+            re.DOTALL,
+        )
+        if ld and "BreadcrumbList" in ld:
+            names = re.findall(r'"name"\s*:\s*"([^"]+)"', ld)
+            parts = [n.strip() for n in names if n.strip() and n.upper() != "HOME"]
+
+    if not parts:
+        return "", ""
+    return parts[-1], " > ".join(parts)
 
 
 def _fetch_kyobo_book(
@@ -266,26 +330,27 @@ def _fetch_kyobo_book(
     except Exception:
         return fallback  # 상세가 실패해도 검색 메타로 보여줌
 
-    # breadcrumb_list 안의 모든 <a>를 순서대로 모아요.
-    breadcrumb_html = _search(
-        r'<ol[^>]*class="breadcrumb_list"[^>]*>(.*?)</ol>',
-        detail,
-        flags=re.DOTALL,
+    # 제목: og:title 을 1순위로 (표준 OpenGraph 이라 바뀔 가능성이 낮음)
+    title = _pick_first_clean([
+        _search(r'<meta property="og:title" content="([^"]+)"', detail),
+        _search(r'<span[^>]*class="[^"]*prod_title[^"]*"[^>]*>([^<]+)</span>', detail),
+        _search(r'<h1[^>]*class="[^"]*title[^"]*"[^>]*>([^<]+)</h1>', detail),
+        _search(r'<title>([^<|]+)', detail),
+    ])
+
+    # 표지: og:image 1순위
+    cover = (
+        _search(r'<meta property="og:image" content="([^"]+)"', detail)
+        or _search(r'<meta name="twitter:image" content="([^"]+)"', detail)
     )
-    parts: list[str] = []
-    if breadcrumb_html:
-        parts = re.findall(r">([^<>]+)</a>", breadcrumb_html)
-        parts = [p.strip() for p in parts if p.strip()]
-        parts = [p for p in parts if p.upper() != "HOME"]
 
-    category = parts[-1] if parts else ""
-    full = " > ".join(parts)
-
-    # 상세에서 제목/작가/출판사/커버 꺼내기 (없으면 fallback 값 유지)
-    title = _search(r'<span class="prod_title">([^<]+)</span>', detail)
-    author = _search(r'data-author="([^"]+)"', detail)
+    author = (
+        _search(r'<meta name="author" content="([^"]+)"', detail)
+        or _search(r'data-author="([^"]+)"', detail)
+    )
     publisher = _search(r'data-publisher="([^"]+)"', detail)
-    cover = _search(r'<meta property="og:image" content="([^"]+)"', detail)
+
+    category, full = _extract_kyobo_category(detail)
 
     book = {
         "title": _unescape(title),
@@ -301,9 +366,10 @@ def _fetch_kyobo_book(
 
 def search_kyobo(query: str, max_results: int = MAX_RESULTS) -> dict:
     session = _new_session()
+    # gbCode=TOT 추가 — 브라우저에서 실제로 보내는 파라미터와 맞춰서 더 안정적
     search_url = (
         "https://search.kyobobook.co.kr/search"
-        f"?keyword={urllib.parse.quote(query)}&target=total"
+        f"?keyword={urllib.parse.quote(query)}&gbCode=TOT&target=total"
     )
     html = _get(search_url, session=session)
 
