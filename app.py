@@ -82,11 +82,23 @@ def _build_query(title: str, author: str = "") -> str:
     return title
 
 
+def _merge_fallback(book: Optional[dict], fallback: Optional[dict]) -> Optional[dict]:
+    """상세 페이지에서 못 얻은 필드를 검색 페이지 정보로 채워 넣습니다."""
+    if book is None:
+        return fallback
+    if not fallback:
+        return book
+    for k, v in fallback.items():
+        if not book.get(k):
+            book[k] = v
+    return book
+
+
 # ---- 알라딘 ---------------------------------------------------------------
-def _fetch_aladin_book(item_id: str, search_url: str, cookies: dict) -> Optional[dict]:
+def _fetch_aladin_book(
+    item_id: str, search_url: str, session: requests.Session
+) -> Optional[dict]:
     """알라딘 상세 페이지에서 책 1권 정보를 뽑아옵니다."""
-    session = _new_session()
-    session.cookies.update(cookies)
     detail_url = f"https://www.aladin.co.kr/shop/wproduct.aspx?ItemId={item_id}"
     try:
         detail = _get(detail_url, referer=search_url, session=session)
@@ -140,8 +152,7 @@ def search_aladin(query: str, max_results: int = MAX_RESULTS) -> dict:
     )
     html = _get(search_url, session=session)
 
-    # 헤더/배너가 아닌 실제 검색 결과 카드(ss_book_box) 안의 ItemId 들을
-    # 순서대로 최대 max_results 개까지 모읍니다.
+    # 실제 검색 결과 카드(ss_book_box) 안의 ItemId 들을 순서대로 모읍니다.
     item_ids: list[str] = []
     seen: set[str] = set()
     for m in re.finditer(
@@ -160,10 +171,10 @@ def search_aladin(query: str, max_results: int = MAX_RESULTS) -> dict:
     if not item_ids:
         return {"site": "aladin", "results": [], "error": "검색 결과 없음"}
 
-    cookies = dict(session.cookies)
+    # 같은 session 을 스레드들이 공유 — requests.Session 은 GET 에 대해 안전합니다.
     with ThreadPoolExecutor(max_workers=len(item_ids)) as pool:
         books = list(
-            pool.map(lambda iid: _fetch_aladin_book(iid, search_url, cookies), item_ids)
+            pool.map(lambda iid: _fetch_aladin_book(iid, search_url, session), item_ids)
         )
     books = [b for b in books if b]
     if not books:
@@ -172,16 +183,90 @@ def search_aladin(query: str, max_results: int = MAX_RESULTS) -> dict:
 
 
 # ---- 교보문고 -------------------------------------------------------------
-def _fetch_kyobo_book(item_id: str, search_url: str, cookies: dict) -> Optional[dict]:
-    session = _new_session()
-    session.cookies.update(cookies)
-    detail_url = f"https://product.kyobobook.co.kr/detail/{item_id}"
+def _parse_kyobo_search_items(html: str, max_results: int) -> list[dict]:
+    """
+    교보문고 검색 결과 페이지에서 각 prod_item 블록마다
+    {id, title, author, publisher, cover} 를 미리 뽑아 둡니다.
+    상세 페이지 파싱이 실패해도 이 정보를 대신 보여줄 수 있어요.
+    """
+    items: list[dict] = []
+    seen: set[str] = set()
+    for m in re.finditer(
+        r'<li[^>]*class="prod_item"[^>]*>(.*?)</li>\s*(?=<li|</ul)',
+        html,
+        re.DOTALL,
+    ):
+        block = m.group(1)
+
+        id_m = re.search(r"/detail/(S\d+)", block)
+        if not id_m:
+            continue
+        iid = id_m.group(1)
+        if iid in seen:
+            continue
+        seen.add(iid)
+
+        # 제목: a 태그 내부에서 prod_name/prod_info/title 등 자주 쓰는 클래스를 먼저 시도,
+        # 실패하면 <img alt="..."> 를 사용.
+        title = (
+            _search(r'class="prod_name"[^>]*>([^<]+)<', block)
+            or _search(r'class="prod_info"[^>]*>\s*<span[^>]*>([^<]+)</span>', block)
+            or _search(r'<img[^>]+alt="([^"]+)"', block)
+        )
+
+        author = (
+            _search(r'class="prod_author"[^>]*>([^<]+)<', block)
+            or _search(r'class="author"[^>]*>([^<]+)<', block)
+        )
+
+        publisher = _search(r'class="prod_publish"[^>]*>([^<]+)<', block)
+
+        cover = (
+            _search(r'<img[^>]+data-src="([^"]+)"', block)
+            or _search(r'<img[^>]+src="([^"]+)"', block)
+        )
+
+        items.append(
+            {
+                "id": iid,
+                "title": _unescape(title),
+                "author": _unescape(author),
+                "publisher": _unescape(publisher),
+                "cover": cover or "",
+                "link": f"https://product.kyobobook.co.kr/detail/{iid}",
+            }
+        )
+        if len(items) >= max_results:
+            break
+    return items
+
+
+def _fetch_kyobo_book(
+    item: dict, search_url: str, session: requests.Session
+) -> Optional[dict]:
+    """
+    교보문고 상세 페이지에서 카테고리/제목/저자/표지를 뽑아옵니다.
+    실패하거나 필드가 비어 있으면 검색 페이지에서 먼저 뽑아 둔 fallback 으로 채웁니다.
+    """
+    iid = item["id"]
+    detail_url = f"https://product.kyobobook.co.kr/detail/{iid}"
+
+    fallback = {
+        "title": item.get("title", ""),
+        "author": item.get("author", ""),
+        "publisher": item.get("publisher", ""),
+        "cover": item.get("cover", ""),
+        "link": detail_url,
+        "category": "",
+        "category_full": "",
+    }
+
     try:
         detail = _get(detail_url, referer=search_url, session=session)
     except Exception:
-        return None
+        return fallback  # 상세가 실패해도 검색 메타로 보여줌
 
-    # breadcrumb_list 안의 모든 <a>를 순서대로 모아요. (HOME > 국내도서 > 소설 > ...)
+    # breadcrumb_list 안의 모든 <a>를 순서대로 모아요.
     breadcrumb_html = _search(
         r'<ol[^>]*class="breadcrumb_list"[^>]*>(.*?)</ol>',
         detail,
@@ -191,19 +276,18 @@ def _fetch_kyobo_book(item_id: str, search_url: str, cookies: dict) -> Optional[
     if breadcrumb_html:
         parts = re.findall(r">([^<>]+)</a>", breadcrumb_html)
         parts = [p.strip() for p in parts if p.strip()]
-        # HOME 같은 빈 경로는 제외
         parts = [p for p in parts if p.upper() != "HOME"]
 
     category = parts[-1] if parts else ""
     full = " > ".join(parts)
 
-    # 상세에서 제목/작가/출판사/커버 꺼내기
+    # 상세에서 제목/작가/출판사/커버 꺼내기 (없으면 fallback 값 유지)
     title = _search(r'<span class="prod_title">([^<]+)</span>', detail)
     author = _search(r'data-author="([^"]+)"', detail)
     publisher = _search(r'data-publisher="([^"]+)"', detail)
     cover = _search(r'<meta property="og:image" content="([^"]+)"', detail)
 
-    return {
+    book = {
         "title": _unescape(title),
         "author": _unescape(author),
         "publisher": _unescape(publisher),
@@ -212,6 +296,7 @@ def _fetch_kyobo_book(item_id: str, search_url: str, cookies: dict) -> Optional[
         "category": category,
         "category_full": full,
     }
+    return _merge_fallback(book, fallback)
 
 
 def search_kyobo(query: str, max_results: int = MAX_RESULTS) -> dict:
@@ -222,29 +307,34 @@ def search_kyobo(query: str, max_results: int = MAX_RESULTS) -> dict:
     )
     html = _get(search_url, session=session)
 
-    # 실제 상품 카드 <li class="prod_item"> 안의 detail 링크들을 모읍니다.
-    item_ids: list[str] = []
-    seen: set[str] = set()
-    for m in re.finditer(
-        r'<li class="prod_item"[^>]*>.*?/detail/(S\d+)',
-        html,
-        re.DOTALL,
-    ):
-        iid = m.group(1)
-        if iid in seen:
-            continue
-        seen.add(iid)
-        item_ids.append(iid)
-        if len(item_ids) >= max_results:
-            break
+    items = _parse_kyobo_search_items(html, max_results)
+    if not items:
+        # 기존 방식 폴백 — prod_item 이 안 잡히면 그냥 /detail/S 링크 순으로
+        seen: set[str] = set()
+        for m in re.finditer(r"/detail/(S\d+)", html):
+            iid = m.group(1)
+            if iid in seen:
+                continue
+            seen.add(iid)
+            items.append(
+                {
+                    "id": iid,
+                    "title": "",
+                    "author": "",
+                    "publisher": "",
+                    "cover": "",
+                    "link": f"https://product.kyobobook.co.kr/detail/{iid}",
+                }
+            )
+            if len(items) >= max_results:
+                break
 
-    if not item_ids:
+    if not items:
         return {"site": "kyobo", "results": [], "error": "검색 결과 없음"}
 
-    cookies = dict(session.cookies)
-    with ThreadPoolExecutor(max_workers=len(item_ids)) as pool:
+    with ThreadPoolExecutor(max_workers=len(items)) as pool:
         books = list(
-            pool.map(lambda iid: _fetch_kyobo_book(iid, search_url, cookies), item_ids)
+            pool.map(lambda it: _fetch_kyobo_book(it, search_url, session), items)
         )
     books = [b for b in books if b]
     if not books:
@@ -253,9 +343,9 @@ def search_kyobo(query: str, max_results: int = MAX_RESULTS) -> dict:
 
 
 # ---- 예스24 ---------------------------------------------------------------
-def _fetch_yes24_book(goods_id: str, search_url: str, cookies: dict) -> Optional[dict]:
-    session = _new_session()
-    session.cookies.update(cookies)
+def _fetch_yes24_book(
+    goods_id: str, search_url: str, session: requests.Session
+) -> Optional[dict]:
     detail_url = f"https://www.yes24.com/Product/Goods/{goods_id}"
     try:
         detail = _get(detail_url, referer=search_url, session=session)
@@ -308,7 +398,10 @@ def search_yes24(query: str, max_results: int = MAX_RESULTS) -> dict:
     # 예스24 는 쿠키가 있어야만 검색이 제대로 동작해서, 홈페이지로 먼저
     # 세션을 워밍업해 쿠키(ASP.NET_SessionId 등)를 받아 둡니다.
     session = _new_session()
-    _get("https://www.yes24.com/", session=session)
+    try:
+        _get("https://www.yes24.com/", session=session)
+    except Exception:
+        pass  # 워밍업 실패해도 검색은 시도
 
     search_url = (
         "https://www.yes24.com/Product/Search"
@@ -331,13 +424,24 @@ def search_yes24(query: str, max_results: int = MAX_RESULTS) -> dict:
         if len(goods_ids) >= max_results:
             break
 
+    # gd_name 못 찾으면 아무 /product/goods/ 링크나 폴백
+    if not goods_ids:
+        for m in re.finditer(r"/product/goods/(\d+)", html):
+            gid = m.group(1)
+            if gid in seen:
+                continue
+            seen.add(gid)
+            goods_ids.append(gid)
+            if len(goods_ids) >= max_results:
+                break
+
     if not goods_ids:
         return {"site": "yes24", "results": [], "error": "검색 결과 없음"}
 
-    cookies = dict(session.cookies)
+    # session 을 그대로 공유 — cookies dict 변환 과정에서 KeyError 가 나는 이슈를 피합니다.
     with ThreadPoolExecutor(max_workers=len(goods_ids)) as pool:
         books = list(
-            pool.map(lambda gid: _fetch_yes24_book(gid, search_url, cookies), goods_ids)
+            pool.map(lambda gid: _fetch_yes24_book(gid, search_url, session), goods_ids)
         )
     books = [b for b in books if b]
     if not books:
