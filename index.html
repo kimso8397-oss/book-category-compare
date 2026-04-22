@@ -34,7 +34,7 @@
     }
 
     .container {
-      max-width: 1040px;
+      max-width: 1140px;
       margin: 0 auto;
       padding: 48px 20px 80px;
     }
@@ -48,37 +48,67 @@
     }
     header .subtitle { margin: 0; color: var(--muted); font-size: 15px; }
 
+    /* ---- 검색 폼 ---- */
     .search-box {
-      display: flex;
-      gap: 8px;
       background: var(--card);
       border: 1px solid var(--line);
       border-radius: 14px;
-      padding: 10px;
+      padding: 14px;
       box-shadow: var(--shadow);
-      max-width: 640px;
+      max-width: 720px;
       margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1.3fr 1fr auto;
+      gap: 8px;
+      align-items: stretch;
+    }
+    @media (max-width: 640px) {
+      .search-box { grid-template-columns: 1fr; }
+    }
+    .search-box .field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .search-box label {
+      font-size: 11px;
+      color: var(--muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding-left: 4px;
     }
     .search-box input {
-      flex: 1;
-      border: none;
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
       outline: none;
-      padding: 12px 14px;
-      font-size: 16px;
-      background: transparent;
+      padding: 11px 14px;
+      font-size: 15px;
+      background: #fafbfc;
       color: var(--ink);
+      transition: border 0.15s ease, background 0.15s ease;
+    }
+    .search-box input:focus {
+      border-color: var(--accent);
+      background: #fff;
     }
     .search-box input::placeholder { color: #9ca3af; }
     .search-box button {
+      align-self: end;
       border: none;
       background: var(--accent);
       color: white;
-      padding: 0 20px;
+      padding: 0 22px;
+      height: 42px;
       font-size: 15px;
       font-weight: 600;
       border-radius: 10px;
       cursor: pointer;
       transition: background 0.15s ease;
+    }
+    @media (max-width: 640px) {
+      .search-box button { width: 100%; }
     }
     .search-box button:hover { background: var(--accent-hover); }
     .search-box button:disabled { background: #9ca3af; cursor: not-allowed; }
@@ -92,23 +122,24 @@
     }
     .status.error { color: var(--error); }
 
+    /* ---- 사이트 카드 (3개 컬럼) ---- */
     .cards {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
       gap: 16px;
       margin-top: 16px;
     }
-    @media (max-width: 860px) { .cards { grid-template-columns: 1fr; } }
+    @media (max-width: 960px) { .cards { grid-template-columns: 1fr; } }
 
     .card {
       background: var(--card);
       border: 1px solid var(--line);
       border-radius: 14px;
-      padding: 18px;
+      padding: 16px;
       box-shadow: var(--shadow);
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 10px;
       min-height: 240px;
     }
 
@@ -118,6 +149,8 @@
       letter-spacing: 0.06em;
       text-transform: uppercase;
       color: var(--muted);
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--line);
     }
     .site.aladin { color: var(--aladin); }
     .site.kyobo  { color: var(--kyobo); }
@@ -136,58 +169,91 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    .card .row {
+    /* ---- 책 한 권 (mini row) ---- */
+    .book-list {
       display: flex;
-      gap: 12px;
-      align-items: flex-start;
+      flex-direction: column;
     }
-    .card .cover {
+    .book-item {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      padding: 12px 0;
+      border-bottom: 1px dashed var(--line);
+    }
+    .book-item:last-child { border-bottom: none; }
+    .book-item .rank {
       flex-shrink: 0;
-      width: 68px;
-      height: 96px;
-      border-radius: 6px;
+      width: 18px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--muted);
+      padding-top: 2px;
+    }
+    .book-item .cover {
+      flex-shrink: 0;
+      width: 44px;
+      height: 62px;
+      border-radius: 4px;
       object-fit: cover;
       background: #f3f4f6;
       border: 1px solid var(--line);
     }
-
-    .card .title {
+    .book-item .info {
+      flex: 1;
+      min-width: 0;
+    }
+    .book-item .title {
       margin: 0;
-      font-size: 15px;
+      font-size: 13.5px;
       font-weight: 700;
       letter-spacing: -0.01em;
+      line-height: 1.35;
+      word-break: keep-all;
     }
-    .card .title a { color: var(--ink); text-decoration: none; }
-    .card .title a:hover { color: var(--accent); text-decoration: underline; }
-    .card .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
-
-    .category-block { margin-top: auto; }
-    .category-label {
-      font-size: 11px;
+    .book-item .title a { color: var(--ink); text-decoration: none; }
+    .book-item .title a:hover { color: var(--accent); text-decoration: underline; }
+    .book-item .meta {
       color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      margin-bottom: 4px;
+      font-size: 11.5px;
+      margin-top: 3px;
+      word-break: keep-all;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: -webkit-box;
+      -webkit-line-clamp: 1;
+      -webkit-box-orient: vertical;
     }
-    .category {
+    .book-item .category {
       display: inline-block;
       background: #eef2ff;
       color: #3730a3;
-      padding: 6px 12px;
+      padding: 3px 9px;
       border-radius: 999px;
-      font-size: 14px;
+      font-size: 11.5px;
       font-weight: 700;
+      margin-top: 6px;
+      max-width: 100%;
+      word-break: keep-all;
     }
-    .category.empty {
+    .book-item .category.empty {
       background: #f3f4f6;
       color: var(--muted);
       font-weight: 500;
     }
-    .category-full {
-      margin-top: 6px;
-      font-size: 12px;
+    .book-item .category-full {
+      margin-top: 4px;
+      font-size: 10.5px;
       color: var(--muted);
       word-break: keep-all;
+      line-height: 1.4;
+    }
+
+    .placeholder {
+      color: var(--muted);
+      font-size: 13px;
+      padding: 16px 4px;
+      text-align: center;
     }
     .card-error {
       color: var(--error);
@@ -197,24 +263,6 @@
       border: 1px solid #fecaca;
       border-radius: 8px;
     }
-
-    .compare-banner {
-      margin-top: 18px;
-      padding: 12px 16px;
-      background: #f0fdf4;
-      border: 1px solid #bbf7d0;
-      color: #14532d;
-      border-radius: 10px;
-      font-size: 14px;
-      text-align: center;
-      display: none;
-    }
-    .compare-banner.diff {
-      background: #fff7ed;
-      border-color: #fed7aa;
-      color: #9a3412;
-    }
-    .compare-banner.show { display: block; }
 
     footer {
       margin-top: 40px;
@@ -235,32 +283,47 @@
     </header>
 
     <div class="search-box">
-      <input id="bookInput" type="text"
-             placeholder="책 제목을 입력하세요 (예: 급류, 채식주의자, 급류)"
-             autocomplete="off" />
+      <div class="field">
+        <label for="bookInput">도서명</label>
+        <input id="bookInput" type="text"
+               placeholder="예: 불안"
+               autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="authorInput">저자명 (선택)</label>
+        <input id="authorInput" type="text"
+               placeholder="예: 알랭 드 보통"
+               autocomplete="off" />
+      </div>
       <button id="searchBtn">검색</button>
     </div>
 
     <div id="status" class="status"></div>
-    <div id="compareBanner" class="compare-banner"></div>
 
     <div class="cards" id="cards">
       <div class="card" data-site="aladin">
         <div class="site aladin">알라딘</div>
-        <div class="card-body" data-placeholder>책 제목을 검색해 보세요.</div>
+        <div class="card-body" data-placeholder>
+          <div class="placeholder">책 제목을 검색해 보세요.</div>
+        </div>
       </div>
       <div class="card" data-site="kyobo">
         <div class="site kyobo">교보문고</div>
-        <div class="card-body" data-placeholder>책 제목을 검색해 보세요.</div>
+        <div class="card-body" data-placeholder>
+          <div class="placeholder">책 제목을 검색해 보세요.</div>
+        </div>
       </div>
       <div class="card" data-site="yes24">
         <div class="site yes24">예스24</div>
-        <div class="card-body" data-placeholder>책 제목을 검색해 보세요.</div>
+        <div class="card-body" data-placeholder>
+          <div class="placeholder">책 제목을 검색해 보세요.</div>
+        </div>
       </div>
     </div>
 
     <footer>
-      ※ 각 서점의 검색 결과 중 <b>가장 상단에 나오는 책 1권</b>의 카테고리를 보여줍니다.
+      ※ 각 서점의 검색 결과 중 <b>상위 5권</b>의 카테고리를 보여줍니다.
+      저자명을 함께 입력하면 더 정확하게 찾을 수 있어요.
     </footer>
   </div>
 
@@ -269,10 +332,10 @@
     // 프론트만 따로 띄우고 테스트할 일이 있으면 여기 서버 주소를 넣어도 됩니다.
     const API_BASE = "";
 
-    const input = document.getElementById("bookInput");
+    const titleInput = document.getElementById("bookInput");
+    const authorInput = document.getElementById("authorInput");
     const btn = document.getElementById("searchBtn");
     const statusEl = document.getElementById("status");
-    const bannerEl = document.getElementById("compareBanner");
     const cards = {
       aladin: document.querySelector('.card[data-site="aladin"]'),
       kyobo:  document.querySelector('.card[data-site="kyobo"]'),
@@ -280,8 +343,10 @@
     };
 
     btn.addEventListener("click", search);
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") search();
+    [titleInput, authorInput].forEach((el) => {
+      el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") search();
+      });
     });
 
     function setStatus(text, isError = false) {
@@ -304,8 +369,43 @@
         const card = cards[site];
         card.classList.add("loading");
         const body = card.querySelector(".card-body");
-        body.innerHTML = `<div class="meta">불러오는 중…</div>`;
+        body.innerHTML = `<div class="placeholder">불러오는 중…</div>`;
       }
+    }
+
+    function renderBookItem(book, rank) {
+      const cover = book.cover
+        ? `<img class="cover" src="${escapeHtml(book.cover)}" alt="${escapeHtml(book.title)} 표지"
+                onerror="this.style.visibility='hidden'"/>`
+        : `<div class="cover"></div>`;
+
+      const meta = [book.author, book.publisher]
+        .filter(Boolean).map(escapeHtml).join(" · ");
+
+      const category = book.category
+        ? `<span class="category" title="${escapeHtml(book.category_full || book.category)}">${escapeHtml(book.category)}</span>`
+        : `<span class="category empty">카테고리 정보 없음</span>`;
+
+      const fullLine = book.category_full && book.category_full !== book.category
+        ? `<div class="category-full">${escapeHtml(book.category_full)}</div>`
+        : "";
+
+      return `
+        <div class="book-item">
+          <div class="rank">${rank}</div>
+          ${cover}
+          <div class="info">
+            <h3 class="title">
+              <a href="${escapeHtml(book.link || "#")}" target="_blank" rel="noopener">
+                ${escapeHtml(book.title || "제목 없음")}
+              </a>
+            </h3>
+            <div class="meta">${meta || "&nbsp;"}</div>
+            ${category}
+            ${fullLine}
+          </div>
+        </div>
+      `;
     }
 
     function renderCard(site, data) {
@@ -313,81 +413,42 @@
       card.classList.remove("loading");
       const body = card.querySelector(".card-body");
 
-      if (!data || data.error) {
-        const msg = (data && data.error) ? data.error : "알 수 없는 오류";
+      if (!data) {
+        body.innerHTML = `<div class="card-error">알 수 없는 오류</div>`;
+        return;
+      }
+
+      const results = Array.isArray(data.results) ? data.results : [];
+
+      if (results.length === 0) {
+        const msg = data.error || "검색 결과 없음";
         body.innerHTML = `<div class="card-error">${escapeHtml(msg)}</div>`;
         return;
       }
 
-      const cover = data.cover
-        ? `<img class="cover" src="${escapeHtml(data.cover)}" alt="${escapeHtml(data.title)} 표지"
-                onerror="this.style.visibility='hidden'"/>`
-        : `<div class="cover"></div>`;
-
-      const meta = [data.author, data.publisher].filter(Boolean).map(escapeHtml).join(" · ");
-
-      const category = data.category
-        ? `<span class="category" title="${escapeHtml(data.category_full || data.category)}">${escapeHtml(data.category)}</span>`
-        : `<span class="category empty">카테고리 정보 없음</span>`;
-
-      const fullLine = data.category_full && data.category_full !== data.category
-        ? `<div class="category-full">${escapeHtml(data.category_full)}</div>`
-        : "";
-
-      body.innerHTML = `
-        <div class="row">
-          ${cover}
-          <div>
-            <h2 class="title">
-              <a href="${escapeHtml(data.link || "#")}" target="_blank" rel="noopener">
-                ${escapeHtml(data.title || "제목 없음")}
-              </a>
-            </h2>
-            <div class="meta">${meta || "&nbsp;"}</div>
-          </div>
-        </div>
-        <div class="category-block">
-          <div class="category-label">카테고리</div>
-          ${category}
-          ${fullLine}
-        </div>
-      `;
-    }
-
-    function updateCompareBanner(results) {
-      const cats = Object.values(results)
-        .map((r) => r && !r.error ? (r.category || "").trim() : "")
-        .filter(Boolean);
-
-      if (cats.length < 2) {
-        bannerEl.classList.remove("show", "diff");
-        return;
-      }
-      const allSame = cats.every((c) => c === cats[0]);
-      bannerEl.classList.add("show");
-      if (allSame) {
-        bannerEl.classList.remove("diff");
-        bannerEl.textContent = `✅ 세 서점 모두 같은 카테고리: "${cats[0]}"`;
-      } else {
-        bannerEl.classList.add("diff");
-        bannerEl.textContent = `🔀 서점마다 카테고리가 달라요 — ${cats.join(" / ")}`;
-      }
+      const items = results.map((b, i) => renderBookItem(b, i + 1)).join("");
+      body.innerHTML = `<div class="book-list">${items}</div>`;
     }
 
     async function search() {
-      const query = input.value.trim();
-      if (!query) {
+      const title = titleInput.value.trim();
+      const author = authorInput.value.trim();
+
+      if (!title) {
         setStatus("책 제목을 먼저 입력해주세요.", true);
         return;
       }
 
       btn.disabled = true;
-      setStatus(`"${query}" 검색 중이에요… (세 서점을 동시에 확인하는 데 5~10초 정도 걸릴 수 있어요)`);
-      bannerEl.classList.remove("show", "diff");
+      const label = author ? `"${title}" (저자: ${author})` : `"${title}"`;
+      setStatus(`${label} 검색 중이에요… (세 서점 × 최대 5권을 동시에 확인하는 데 10~20초 정도 걸릴 수 있어요)`);
       setCardLoading();
 
       try {
-        const resp = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(query)}`);
+        const params = new URLSearchParams({ q: title });
+        if (author) params.set("author", author);
+
+        const resp = await fetch(`${API_BASE}/api/search?${params.toString()}`);
         if (!resp.ok) {
           const msg = await resp.text().catch(() => "");
           throw new Error(`서버 오류 (${resp.status}) ${msg}`);
@@ -398,14 +459,13 @@
         ["aladin", "kyobo", "yes24"].forEach((site) => {
           renderCard(site, results[site]);
         });
-        updateCompareBanner(results);
 
-        setStatus(`"${query}" 검색 완료`);
+        setStatus(`${label} 검색 완료`);
       } catch (err) {
         console.error(err);
         setStatus(err.message || "알 수 없는 오류가 발생했어요.", true);
         for (const site of Object.keys(cards)) {
-          renderCard(site, { error: "검색 실패" });
+          renderCard(site, { results: [], error: "검색 실패" });
         }
       } finally {
         btn.disabled = false;
