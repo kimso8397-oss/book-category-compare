@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 import requests
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 # curl_cffi: Chrome TLS 핑거프린트를 흉내 내서 CloudFront/Cloudflare 같은 WAF 를
@@ -856,6 +856,53 @@ def api_debug_kyobo():
     except Exception as e:
         info["detail_error"] = f"{type(e).__name__}: {e}"
     return jsonify(info)
+
+
+@app.route("/api/debug/kyobo_raw")
+def api_debug_kyobo_raw():
+    """
+    교보문고 검색 페이지의 body 부분(최대 80KB)을 text/plain 으로 그대로
+    돌려줍니다. 지금 /api/debug/kyobo 응답에서 /detail/... 링크가 3개뿐이고
+    실제 상품 카드 URL 패턴을 못 찾고 있어서, 원본 HTML 을 한 번만 사람 눈으로
+    보고 패턴을 확정하려는 용도입니다.
+    """
+    q = (request.args.get("q") or "불안").strip()
+    search_url = (
+        "https://search.kyobobook.co.kr/search"
+        f"?keyword={urllib.parse.quote(q)}&gbCode=TOT&target=total"
+    )
+    try:
+        _, _, _, html = _get_kyobo(search_url, referer="https://www.kyobobook.co.kr/")
+    except Exception as e:
+        return Response(f"FETCH ERROR: {type(e).__name__}: {e}", mimetype="text/plain")
+
+    # body 이후 80KB 만 잘라서 plain text 로 돌려줍니다.
+    body_start = html.find("<body")
+    chunk = html[body_start : body_start + 80000] if body_start > -1 else html[:80000]
+
+    # 상품 URL 패턴 후보를 한 번에 많이 뽑아 상단에 요약으로 붙입니다.
+    summary_parts = [f"QUERY: {q}", f"URL: {search_url}", f"TOTAL LEN: {len(html)}", ""]
+
+    patterns = {
+        "href /detail/...": r'href="([^"]*\/detail\/[^"]+)"',
+        "href containing /prod/": r'href="([^"]*\/prod\/[^"]+)"',
+        "href containing /goods/": r'href="([^"]*\/goods\/[^"]+)"',
+        "href containing barcode=": r'href="([^"]*barcode=[^"]+)"',
+        "data-bid=": r'data-bid="([^"]+)"',
+        "data-prd-id=": r'data-prd-id="([^"]+)"',
+        "data-barcode=": r'data-barcode="([^"]+)"',
+        "data-saleCmdtid=": r'data-sale[cC]mdtid="([^"]+)"',
+        "goProduct(": r"goProduct\(['\"]([^'\"]+)['\"]",
+        "product.kyobobook.co.kr": r'(https?://product\.kyobobook\.co\.kr/[^"\'<>\s]+)',
+    }
+    for label, pat in patterns.items():
+        matches = list(dict.fromkeys(re.findall(pat, html)))[:15]
+        summary_parts.append(f"-- {label} -> {len(matches)} unique")
+        for m in matches:
+            summary_parts.append(f"   {m}")
+
+    summary = "\n".join(summary_parts) + "\n\n===== BODY (first 80KB) =====\n\n"
+    return Response(summary + chunk, mimetype="text/plain; charset=utf-8")
 
 
 @app.route("/api/search")
