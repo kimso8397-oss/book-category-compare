@@ -26,6 +26,18 @@ import requests
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
+# curl_cffi: Chrome TLS 핑거프린트를 흉내 내서 CloudFront/Cloudflare 같은 WAF 를
+# 우회하는 용도. 교보문고 상세 페이지가 AWS CloudFront 뒤에 있어서 Render 의
+# egress IP 를 봇으로 판정하는 문제가 있는데, curl_cffi 로 Chrome 을 impersonate
+# 하면 통과하는 경우가 많아요. 설치 실패하면 조용히 requests 로 폴백합니다.
+try:
+    from curl_cffi import requests as cffi_requests  # type: ignore
+
+    HAS_CFFI = True
+except Exception:  # pragma: no cover
+    cffi_requests = None  # type: ignore
+    HAS_CFFI = False
+
 app = Flask(__name__, static_folder=".", static_url_path="")
 CORS(app)  # 친구가 다른 주소에서 프론트엔드만 열어도 부를 수 있게
 
@@ -231,6 +243,52 @@ def _extract_kyobo_jsonld(html: str) -> Optional[dict]:
     return None
 
 
+def _get_kyobo_detail(detail_url: str, referer: str) -> tuple[int, int, dict, str]:
+    """
+    교보문고 상세 페이지를 가져옵니다. CloudFront WAF 가 requests 의 TLS
+    지문으로 차단을 걸 수 있어서, curl_cffi 가 있으면 Chrome 을 impersonate
+    해서 먼저 시도하고, 그래도 본문이 비면 requests 로 한 번 더 시도합니다.
+
+    반환: (status_code, raw_bytes_len, headers_dict, text)
+    """
+    # 실제 브라우저에서 보내는 전체 헤더 세트. 단순히 UA 만 바꾸는 것보다
+    # Sec-Fetch-* / Sec-CH-UA 까지 맞추면 WAF 통과율이 올라갑니다.
+    full_headers = {
+        **BROWSER_HEADERS,
+        "Referer": referer,
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-site",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+        "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"macOS"',
+    }
+
+    # 1) curl_cffi 로 Chrome TLS 핑거프린트 흉내
+    if HAS_CFFI:
+        try:
+            r = cffi_requests.get(
+                detail_url,
+                headers=full_headers,
+                impersonate="chrome120",
+                timeout=TIMEOUT,
+            )
+            body = r.content or b""
+            if len(body) > 0:
+                text = body.decode(r.encoding or "utf-8", errors="replace")
+                return (r.status_code, len(body), dict(r.headers), text)
+        except Exception:
+            pass  # 실패하면 아래 requests 폴백
+
+    # 2) requests 폴백
+    r2 = requests.get(detail_url, headers=full_headers, timeout=TIMEOUT)
+    body2 = r2.content or b""
+    r2.encoding = r2.apparent_encoding or r2.encoding
+    return (r2.status_code, len(body2), dict(r2.headers), r2.text)
+
+
 def _clean_kyobo_author(raw: str) -> str:
     """ '알랭 드 보통 지음 | 정영목 번역' → '알랭 드 보통' 처럼
     여러 명이 묶여 있는 author 문자열에서 대표 저자만 깔끔하게 뽑아냅니다."""
@@ -375,12 +433,16 @@ def _fetch_kyobo_book(
     }
 
     try:
-        detail = _get(detail_url, referer=search_url, session=session)
+        status, raw_len, _hdrs, detail = _get_kyobo_detail(detail_url, referer=search_url)
     except Exception as e:
-        # 상세 fetch 가 실패한 건지 그냥 파싱 실패인지 구분할 수 있게
-        # fallback 의 category_full 에 디버그 힌트를 남겨 둡니다.
         fb = dict(fallback)
         fb["category_full"] = f"(상세 페이지 접근 실패: {type(e).__name__})"
+        return fb
+
+    # CloudFront 가 200 + 빈 본문으로 조용히 차단하는 경우 처리
+    if raw_len == 0 or not detail:
+        fb = dict(fallback)
+        fb["category_full"] = f"(CloudFront 차단 의심: status={status}, 본문 0바이트)"
         return fb
 
     # ① 1순위: JSON-LD Book 블록 — name/image/author/publisher/genre 가
@@ -678,29 +740,25 @@ def api_debug_kyobo():
     first_id = ids[0]
     detail_url = f"https://product.kyobobook.co.kr/detail/{first_id}"
     info["detail_url"] = detail_url
+    info["has_curl_cffi"] = HAS_CFFI
     try:
-        r2 = session.get(detail_url, headers={"Referer": search_url}, timeout=TIMEOUT)
-        info["detail_status"] = r2.status_code
-        # raw bytes 길이와 응답 헤더를 같이 찍어서
-        # '빈 본문'이 진짜 빈 건지, 압축 해제 실패인지 구분합니다.
-        info["detail_raw_bytes"] = len(r2.content)
+        status, raw_len, hdrs, detail_html = _get_kyobo_detail(detail_url, search_url)
+        info["detail_status"] = status
+        info["detail_raw_bytes"] = raw_len
         info["detail_headers"] = {
             k: v
-            for k, v in r2.headers.items()
+            for k, v in hdrs.items()
             if k.lower()
             in (
                 "content-encoding",
                 "content-length",
                 "content-type",
                 "server",
-                "set-cookie",
                 "x-cache",
                 "x-bot-check",
                 "cf-ray",
             )
         }
-        r2.encoding = r2.apparent_encoding or r2.encoding
-        detail_html = r2.text
         info["detail_length"] = len(detail_html)
         info["detail_head_2000"] = detail_html[:2000]
         info["has_jsonld_book"] = _extract_kyobo_jsonld(detail_html) is not None
