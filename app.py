@@ -245,50 +245,52 @@ def _clean_kyobo_author(raw: str) -> str:
 
 def _parse_kyobo_search_items(html: str, max_results: int) -> list[dict]:
     """
-    교보문고 검색 결과 페이지에서 각 prod_item 블록마다
-    {id, title, author, publisher, cover} 를 미리 뽑아 둡니다.
-    상세 페이지 파싱이 실패해도 이 정보를 대신 보여줄 수 있어요.
+    교보문고 검색 결과 페이지에서 /detail/S... 링크를 순서대로 찾고,
+    각 링크 주변 HTML 윈도우에서 제목/표지를 긁어 옵니다.
+
+    기존에는 li.prod_item 블록에만 의존했는데, 교보문고가 class 이름을
+    조금만 바꿔도 전부 깨져서 — 지금은 class 구조에 덜 의존하는 방식으로
+    바꿨습니다. 실제 제목/카테고리는 상세 페이지의 JSON-LD 에서
+    최종적으로 덮어써지므로, 여기서는 '못 해도 빈값 대신 뭔가라도 보여주기'
+    용 fallback 정도의 역할만 합니다.
     """
     items: list[dict] = []
     seen: set[str] = set()
-    for m in re.finditer(
-        r'<li[^>]*class="[^"]*prod_item[^"]*"[^>]*>(.*?)</li>\s*(?=<li|</ul>)',
-        html,
-        re.DOTALL,
-    ):
-        block = m.group(1)
 
-        id_m = re.search(r"/detail/(S\d+)", block)
-        if not id_m:
-            continue
-        iid = id_m.group(1)
+    for m in re.finditer(r"/detail/(S\d+)", html):
+        iid = m.group(1)
         if iid in seen:
             continue
         seen.add(iid)
 
-        # 제목: img alt → prod_name → a[title] 순으로 시도, 대괄호 뱃지는 스킵
+        # 링크 위치 양옆으로 ~3000자 윈도우를 떠서 이 제품에 속한 마크업만 본다고 가정.
+        start = max(0, m.start() - 3000)
+        end = min(len(html), m.end() + 3000)
+        window = html[start:end]
+
+        # 제목: 교보문고는 대개 <img alt="책제목 표지"> 형태를 써요.
+        #       '표지' 접미사가 붙은 alt 를 먼저 시도합니다.
         title = _pick_first_clean([
-            _search(r'<img[^>]+alt="([^"]+?)(?:\s*표지)?"', block),
-            _search(r'class="prod_name"[^>]*>([^<]+)<', block),
-            _search(r'class="prod_title"[^>]*>([^<]+)<', block),
-            _search(r'<a[^>]+href="[^"]*/detail/S\d+"[^>]+title="([^"]+)"', block),
+            _search(r'<img[^>]+alt="([^"]+?)\s*표지"', window),
+            _search(r'<img[^>]+alt="([^"]+?)"', window),
+            _search(r'class="prod_name"[^>]*>([^<]+)<', window),
+            _search(r'class="prod_title"[^>]*>([^<]+)<', window),
+            _search(r'<a[^>]+href="[^"]*/detail/S\d+"[^>]+title="([^"]+)"', window),
         ])
 
         author = (
-            _search(r'class="[^"]*prod_author[^"]*"[^>]*>([^<]+)<', block)
-            or _search(r'class="[^"]*author[^"]*"[^>]*>([^<]+)<', block)
+            _search(r'class="[^"]*prod_author[^"]*"[^>]*>([^<]+)<', window)
+            or _search(r'class="[^"]*author[^"]*"[^>]*>([^<]+)<', window)
         )
+        publisher = _search(r'class="[^"]*prod_publish[^"]*"[^>]*>([^<]+)<', window)
 
-        publisher = _search(r'class="[^"]*prod_publish[^"]*"[^>]*>([^<]+)<', block)
-
-        # lazy-load 이미지들: data-src, data-original, kbbfn 전용 속성들 등
+        # 표지: lazy-load 속성들 → 일반 src 순서
         cover = (
-            _search(r'<img[^>]+data-src="([^"]+)"', block)
-            or _search(r'<img[^>]+data-original="([^"]+)"', block)
-            or _search(r'<img[^>]+data-kbbfn-src="([^"]+)"', block)
-            or _search(r'<img[^>]+src="([^"]+)"', block)
+            _search(r'<img[^>]+data-kbbfn-src="([^"]+)"', window)
+            or _search(r'<img[^>]+data-src="([^"]+)"', window)
+            or _search(r'<img[^>]+data-original="([^"]+)"', window)
+            or _search(r'<img[^>]+src="(https?://[^"]+pdt[^"]+)"', window)
         )
-        # 빈 placeholder 이미지는 무시
         if cover and ("placeholder" in cover.lower() or "blank" in cover.lower()):
             cover = ""
 
@@ -374,8 +376,12 @@ def _fetch_kyobo_book(
 
     try:
         detail = _get(detail_url, referer=search_url, session=session)
-    except Exception:
-        return fallback  # 상세가 실패해도 검색 메타로 보여줌
+    except Exception as e:
+        # 상세 fetch 가 실패한 건지 그냥 파싱 실패인지 구분할 수 있게
+        # fallback 의 category_full 에 디버그 힌트를 남겨 둡니다.
+        fb = dict(fallback)
+        fb["category_full"] = f"(상세 페이지 접근 실패: {type(e).__name__})"
+        return fb
 
     # ① 1순위: JSON-LD Book 블록 — name/image/author/publisher/genre 가
     #          전부 깔끔하게 들어 있어서 여기서 거의 모든 필드를 채울 수 있어요.
