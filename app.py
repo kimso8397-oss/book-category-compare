@@ -157,15 +157,15 @@ def _fetch_aladin_book(
     }
 
 
-def search_aladin(query: str, max_results: int = MAX_RESULTS) -> dict:
+def _search_aladin_once(query: str, search_target: str, max_results: int) -> list[dict]:
+    """알라딘을 특정 SearchTarget(Book, All 등)으로 한 번 긁어오는 내부 함수."""
     session = _new_session()
     search_url = (
         "https://www.aladin.co.kr/search/wsearchresult.aspx"
-        f"?SearchTarget=Book&SearchWord={urllib.parse.quote(query)}"
+        f"?SearchTarget={search_target}&SearchWord={urllib.parse.quote(query)}"
     )
     html = _get(search_url, session=session)
 
-    # 실제 검색 결과 카드(ss_book_box) 안의 ItemId 들을 순서대로 모읍니다.
     item_ids: list[str] = []
     seen: set[str] = set()
     for m in re.finditer(
@@ -182,17 +182,27 @@ def search_aladin(query: str, max_results: int = MAX_RESULTS) -> dict:
             break
 
     if not item_ids:
-        return {"site": "aladin", "results": [], "error": "검색 결과 없음"}
+        return []
 
-    # 같은 session 을 스레드들이 공유 — requests.Session 은 GET 에 대해 안전합니다.
     with ThreadPoolExecutor(max_workers=len(item_ids)) as pool:
         books = list(
             pool.map(lambda iid: _fetch_aladin_book(iid, search_url, session), item_ids)
         )
-    books = [b for b in books if b]
-    if not books:
-        return {"site": "aladin", "results": [], "error": "상세 페이지를 불러오지 못했어요"}
-    return {"site": "aladin", "results": books}
+    return [b for b in books if b]
+
+
+def search_aladin(query: str, max_results: int = MAX_RESULTS) -> dict:
+    # 1차: 일반 도서(Book)만 — 대부분 여기서 찾아져요.
+    books = _search_aladin_once(query, "Book", max_results)
+    if books:
+        return {"site": "aladin", "results": books}
+
+    # 2차 폴백: ebook/기타 상품까지 포함 (SearchTarget=All)
+    books = _search_aladin_once(query, "All", max_results)
+    if books:
+        return {"site": "aladin", "results": books, "expanded": True}
+
+    return {"site": "aladin", "results": [], "error": "검색 결과 없음"}
 
 
 # ---- 교보문고 -------------------------------------------------------------
@@ -315,7 +325,7 @@ def _parse_kyobo_search_items(html: str, max_results: int) -> list[dict]:
     items: list[dict] = []
     seen: set[str] = set()
 
-    for m in re.finditer(r"/detail/(S\d+)", html):
+    for m in re.finditer(r"/detail/([A-Z]\d+)", html):
         iid = m.group(1)
         if iid in seen:
             continue
@@ -542,7 +552,7 @@ def search_kyobo(query: str, max_results: int = MAX_RESULTS) -> dict:
     if not items:
         # 기존 방식 폴백 — prod_item 이 안 잡히면 그냥 /detail/S 링크 순으로
         seen: set[str] = set()
-        for m in re.finditer(r"/detail/(S\d+)", html):
+        for m in re.finditer(r"/detail/([A-Z]\d+)", html):
             iid = m.group(1)
             if iid in seen:
                 continue
@@ -625,22 +635,16 @@ def _fetch_yes24_book(
     }
 
 
-def search_yes24(query: str, max_results: int = MAX_RESULTS) -> dict:
-    # 예스24 는 쿠키가 있어야만 검색이 제대로 동작해서, 홈페이지로 먼저
-    # 세션을 워밍업해 쿠키(ASP.NET_SessionId 등)를 받아 둡니다.
-    session = _new_session()
-    try:
-        _get("https://www.yes24.com/", session=session)
-    except Exception:
-        pass  # 워밍업 실패해도 검색은 시도
-
+def _search_yes24_once(
+    query: str, domain: str, session: requests.Session, max_results: int
+) -> list[dict]:
+    """예스24 를 특정 domain(BOOK, ALL 등)으로 한 번 긁어오는 내부 함수."""
     search_url = (
         "https://www.yes24.com/Product/Search"
-        f"?domain=BOOK&query={urllib.parse.quote(query)}"
+        f"?domain={domain}&query={urllib.parse.quote(query)}"
     )
     html = _get(search_url, referer="https://www.yes24.com/", session=session)
 
-    # 실제 검색결과 상품명 근처의 /product/goods/ (소문자) 링크들을 모읍니다.
     goods_ids: list[str] = []
     seen: set[str] = set()
     for m in re.finditer(
@@ -667,17 +671,35 @@ def search_yes24(query: str, max_results: int = MAX_RESULTS) -> dict:
                 break
 
     if not goods_ids:
-        return {"site": "yes24", "results": [], "error": "검색 결과 없음"}
+        return []
 
-    # session 을 그대로 공유 — cookies dict 변환 과정에서 KeyError 가 나는 이슈를 피합니다.
     with ThreadPoolExecutor(max_workers=len(goods_ids)) as pool:
         books = list(
             pool.map(lambda gid: _fetch_yes24_book(gid, search_url, session), goods_ids)
         )
-    books = [b for b in books if b]
-    if not books:
-        return {"site": "yes24", "results": [], "error": "상세 페이지를 불러오지 못했어요"}
-    return {"site": "yes24", "results": books}
+    return [b for b in books if b]
+
+
+def search_yes24(query: str, max_results: int = MAX_RESULTS) -> dict:
+    # 예스24 는 쿠키가 있어야만 검색이 제대로 동작해서, 홈페이지로 먼저
+    # 세션을 워밍업해 쿠키(ASP.NET_SessionId 등)를 받아 둡니다.
+    session = _new_session()
+    try:
+        _get("https://www.yes24.com/", session=session)
+    except Exception:
+        pass
+
+    # 1차: 도서(BOOK)만
+    books = _search_yes24_once(query, "BOOK", session, max_results)
+    if books:
+        return {"site": "yes24", "results": books}
+
+    # 2차 폴백: 전체(ALL) — ebook 포함
+    books = _search_yes24_once(query, "ALL", session, max_results)
+    if books:
+        return {"site": "yes24", "results": books, "expanded": True}
+
+    return {"site": "yes24", "results": [], "error": "검색 결과 없음"}
 
 
 # ---- 라우팅 헬퍼 ---------------------------------------------------------
@@ -728,7 +750,7 @@ def api_debug_kyobo():
         info["search_status"] = r.status_code
         info["search_length"] = len(search_html)
         info["search_head_1500"] = search_html[:1500]
-        ids = list(dict.fromkeys(re.findall(r"/detail/(S\d+)", search_html)))[:5]
+        ids = list(dict.fromkeys(re.findall(r"/detail/([A-Z]\d+)", search_html)))[:5]
         info["detail_ids_found"] = ids
     except Exception as e:
         info["search_error"] = f"{type(e).__name__}: {e}"

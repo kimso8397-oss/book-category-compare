@@ -264,6 +264,27 @@
       border-radius: 8px;
     }
 
+    /* 검색 결과가 없을 때 각 사이트로 바로 이동하는 버튼 */
+    .site-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 10px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 12.5px;
+      font-weight: 600;
+      text-decoration: none;
+      border: 1px solid currentColor;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .site-link:hover { background: currentColor; }
+    .site-link:hover span { color: white; }
+    .site-link.aladin { color: var(--aladin); }
+    .site-link.kyobo  { color: var(--kyobo); }
+    .site-link.yes24  { color: var(--yes24); }
+    .site-link .arrow { font-size: 11px; opacity: 0.8; }
+
     footer {
       margin-top: 40px;
       text-align: center;
@@ -331,6 +352,21 @@
     // 이 페이지가 Flask 서버와 같은 주소에서 열리면 "" (상대경로) 사용.
     // 프론트만 따로 띄우고 테스트할 일이 있으면 여기 서버 주소를 넣어도 됩니다.
     const API_BASE = "";
+
+    // 검색 결과가 없을 때, 각 사이트로 바로 이동할 수 있도록 검색 URL 템플릿을
+    // 정의해 둡니다. 세 사이트 모두 ebook/전체 상품 포함 검색으로 연결돼요.
+    const SITE_SEARCH_URLS = {
+      aladin: (q) =>
+        "https://www.aladin.co.kr/search/wsearchresult.aspx" +
+        "?SearchTarget=All&SearchWord=" + encodeURIComponent(q),
+      kyobo: (q) =>
+        "https://search.kyobobook.co.kr/search" +
+        "?keyword=" + encodeURIComponent(q) + "&gbCode=TOT&target=total",
+      yes24: (q) =>
+        "https://www.yes24.com/product/search" +
+        "?domain=ALL&query=" + encodeURIComponent(q),
+    };
+    const SITE_LABELS = { aladin: "알라딘", kyobo: "교보문고", yes24: "예스24" };
 
     const titleInput = document.getElementById("bookInput");
     const authorInput = document.getElementById("authorInput");
@@ -408,13 +444,29 @@
       `;
     }
 
-    function renderCard(site, data) {
+    function renderSiteLinkButton(site, query) {
+      const builder = SITE_SEARCH_URLS[site];
+      if (!builder || !query) return "";
+      const url = builder(query);
+      const label = SITE_LABELS[site] || site;
+      return `
+        <a class="site-link ${site}" href="${escapeHtml(url)}"
+           target="_blank" rel="noopener">
+          <span>${escapeHtml(label)}에서 직접 검색</span>
+          <span class="arrow">↗</span>
+        </a>
+      `;
+    }
+
+    function renderCard(site, data, query) {
       const card = cards[site];
       card.classList.remove("loading");
       const body = card.querySelector(".card-body");
 
       if (!data) {
-        body.innerHTML = `<div class="card-error">알 수 없는 오류</div>`;
+        body.innerHTML =
+          `<div class="card-error">알 수 없는 오류</div>` +
+          renderSiteLinkButton(site, query);
         return;
       }
 
@@ -422,7 +474,9 @@
 
       if (results.length === 0) {
         const msg = data.error || "검색 결과 없음";
-        body.innerHTML = `<div class="card-error">${escapeHtml(msg)}</div>`;
+        body.innerHTML =
+          `<div class="card-error">${escapeHtml(msg)}</div>` +
+          renderSiteLinkButton(site, query);
         return;
       }
 
@@ -444,6 +498,9 @@
       setStatus(`${label} 검색 중이에요… (세 서점 × 최대 5권을 동시에 확인하는 데 10~20초 정도 걸릴 수 있어요)`);
       setCardLoading();
 
+      // 사이트 직접 검색 링크용 쿼리 — 서버에서 쓰는 것과 동일하게 제목+저자 합침
+      const linkQuery = author ? `${title} ${author}` : title;
+
       try {
         const params = new URLSearchParams({ q: title });
         if (author) params.set("author", author);
@@ -457,7 +514,7 @@
         const results = json.results || {};
 
         ["aladin", "kyobo", "yes24"].forEach((site) => {
-          renderCard(site, results[site]);
+          renderCard(site, results[site], linkQuery);
         });
 
         setStatus(`${label} 검색 완료`);
@@ -465,7 +522,7 @@
         console.error(err);
         setStatus(err.message || "알 수 없는 오류가 발생했어요.", true);
         for (const site of Object.keys(cards)) {
-          renderCard(site, { results: [], error: "검색 실패" });
+          renderCard(site, { results: [], error: "검색 실패" }, linkQuery);
         }
       } finally {
         btn.disabled = false;
