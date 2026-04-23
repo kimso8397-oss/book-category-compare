@@ -680,9 +680,27 @@ def api_debug_kyobo():
     info["detail_url"] = detail_url
     try:
         r2 = session.get(detail_url, headers={"Referer": search_url}, timeout=TIMEOUT)
+        info["detail_status"] = r2.status_code
+        # raw bytes 길이와 응답 헤더를 같이 찍어서
+        # '빈 본문'이 진짜 빈 건지, 압축 해제 실패인지 구분합니다.
+        info["detail_raw_bytes"] = len(r2.content)
+        info["detail_headers"] = {
+            k: v
+            for k, v in r2.headers.items()
+            if k.lower()
+            in (
+                "content-encoding",
+                "content-length",
+                "content-type",
+                "server",
+                "set-cookie",
+                "x-cache",
+                "x-bot-check",
+                "cf-ray",
+            )
+        }
         r2.encoding = r2.apparent_encoding or r2.encoding
         detail_html = r2.text
-        info["detail_status"] = r2.status_code
         info["detail_length"] = len(detail_html)
         info["detail_head_2000"] = detail_html[:2000]
         info["has_jsonld_book"] = _extract_kyobo_jsonld(detail_html) is not None
