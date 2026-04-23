@@ -253,11 +253,15 @@ def _extract_kyobo_jsonld(html: str) -> Optional[dict]:
     return None
 
 
-def _get_kyobo_detail(detail_url: str, referer: str) -> tuple[int, int, dict, str]:
+def _get_kyobo(url: str, referer: str = "https://search.kyobobook.co.kr/") -> tuple[int, int, dict, str]:
     """
-    교보문고 상세 페이지를 가져옵니다. CloudFront WAF 가 requests 의 TLS
-    지문으로 차단을 걸 수 있어서, curl_cffi 가 있으면 Chrome 을 impersonate
-    해서 먼저 시도하고, 그래도 본문이 비면 requests 로 한 번 더 시도합니다.
+    교보문고(검색/상세 페이지 모두)를 가져옵니다. CloudFront WAF 가
+    requests 의 TLS 지문으로 차단을 걸 수 있어서, curl_cffi 가 있으면
+    Chrome 을 impersonate 해서 먼저 시도하고, 그래도 본문이 비면 requests 로
+    한 번 더 시도합니다.
+
+    검색 페이지도 동일 WAF 에 걸리는 것으로 확인돼서, 검색과 상세 모두
+    이 헬퍼를 경유합니다.
 
     반환: (status_code, raw_bytes_len, headers_dict, text)
     """
@@ -280,7 +284,7 @@ def _get_kyobo_detail(detail_url: str, referer: str) -> tuple[int, int, dict, st
     if HAS_CFFI:
         try:
             r = cffi_requests.get(
-                detail_url,
+                url,
                 headers=full_headers,
                 impersonate="chrome120",
                 timeout=TIMEOUT,
@@ -293,7 +297,7 @@ def _get_kyobo_detail(detail_url: str, referer: str) -> tuple[int, int, dict, st
             pass  # 실패하면 아래 requests 폴백
 
     # 2) requests 폴백
-    r2 = requests.get(detail_url, headers=full_headers, timeout=TIMEOUT)
+    r2 = requests.get(url, headers=full_headers, timeout=TIMEOUT)
     body2 = r2.content or b""
     r2.encoding = r2.apparent_encoding or r2.encoding
     return (r2.status_code, len(body2), dict(r2.headers), r2.text)
@@ -443,7 +447,7 @@ def _fetch_kyobo_book(
     }
 
     try:
-        status, raw_len, _hdrs, detail = _get_kyobo_detail(detail_url, referer=search_url)
+        status, raw_len, _hdrs, detail = _get_kyobo(detail_url, referer=search_url)
     except Exception as e:
         fb = dict(fallback)
         fb["category_full"] = f"(상세 페이지 접근 실패: {type(e).__name__})"
@@ -540,13 +544,17 @@ def _fetch_kyobo_book(
 
 
 def search_kyobo(query: str, max_results: int = MAX_RESULTS) -> dict:
-    session = _new_session()
-    # gbCode=TOT 추가 — 브라우저에서 실제로 보내는 파라미터와 맞춰서 더 안정적
+    # 검색 페이지도 CloudFront 뒤에 있어서, Render IP 에서 오는 요청에는
+    # "결과 0건" 으로 응답하는 현상이 관측됐습니다. 그래서 curl_cffi 를
+    # 거치는 _get_kyobo 로 Chrome 처럼 위장해서 가져옵니다.
     search_url = (
         "https://search.kyobobook.co.kr/search"
         f"?keyword={urllib.parse.quote(query)}&gbCode=TOT&target=total"
     )
-    html = _get(search_url, session=session)
+    _status, _raw, _hdrs, html = _get_kyobo(
+        search_url, referer="https://www.kyobobook.co.kr/"
+    )
+    session = _new_session()  # 상세 페이지 fallback 용 (거의 안 쓰이지만 시그니처 유지)
 
     items = _parse_kyobo_search_items(html, max_results)
     if not items:
@@ -737,21 +745,33 @@ def api_debug_kyobo():
     """
     q = (request.args.get("q") or "불안").strip()
     info: dict = {"query": q}
-    session = _new_session()
     search_url = (
         "https://search.kyobobook.co.kr/search"
         f"?keyword={urllib.parse.quote(q)}&gbCode=TOT&target=total"
     )
     info["search_url"] = search_url
     try:
-        r = session.get(search_url, timeout=TIMEOUT)
-        r.encoding = r.apparent_encoding or r.encoding
-        search_html = r.text
-        info["search_status"] = r.status_code
+        status, raw, hdrs, search_html = _get_kyobo(
+            search_url, referer="https://www.kyobobook.co.kr/"
+        )
+        info["search_status"] = status
+        info["search_raw_bytes"] = raw
         info["search_length"] = len(search_html)
         info["search_head_1500"] = search_html[:1500]
-        ids = list(dict.fromkeys(re.findall(r"/detail/([A-Z]\d+)", search_html)))[:5]
+        info["search_headers"] = {
+            k: v for k, v in hdrs.items()
+            if k.lower() in ("content-length", "content-type", "server", "x-cache")
+        }
+        ids = list(dict.fromkeys(re.findall(r"/detail/([A-Z]\d+)", search_html)))[:10]
         info["detail_ids_found"] = ids
+        # /detail/ 로 시작하는 링크 전체 샘플 — 패턴 진단용
+        info["any_detail_links"] = list(dict.fromkeys(
+            re.findall(r'/detail/([^\s"\'<>?#]+)', search_html)
+        ))[:20]
+        info["search_no_result_hint"] = any(
+            kw in search_html
+            for kw in ("검색결과가 없", "검색 결과가 없", "일치하는 상품이 없")
+        )
     except Exception as e:
         info["search_error"] = f"{type(e).__name__}: {e}"
         return jsonify(info)
@@ -764,7 +784,7 @@ def api_debug_kyobo():
     info["detail_url"] = detail_url
     info["has_curl_cffi"] = HAS_CFFI
     try:
-        status, raw_len, hdrs, detail_html = _get_kyobo_detail(detail_url, search_url)
+        status, raw_len, hdrs, detail_html = _get_kyobo(detail_url, search_url)
         info["detail_status"] = status
         info["detail_raw_bytes"] = raw_len
         info["detail_headers"] = {
