@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import html as html_mod
+import json
 import re
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
@@ -196,6 +197,52 @@ def _pick_first_clean(candidates: list[str]) -> str:
     return ""
 
 
+def _extract_kyobo_jsonld(html: str) -> Optional[dict]:
+    """교보문고 상세 페이지의 application/ld+json 블록 중에서
+    @type 이 'Book' 인 블록을 찾아 dict 로 돌려줍니다.
+
+    이 블록 하나에 name / image / author.name / publisher.name / genre 가
+    전부 들어 있어서 가장 안정적인 정보 출처예요.
+    """
+    for m in re.finditer(
+        r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
+        html,
+        re.DOTALL,
+    ):
+        raw = m.group(1).strip()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        # 단일 객체일 수도 있고, @graph 배열로 여러 개 묶여 있을 수도 있어요.
+        candidates = []
+        if isinstance(data, list):
+            candidates.extend(data)
+        elif isinstance(data, dict):
+            if "@graph" in data and isinstance(data["@graph"], list):
+                candidates.extend(data["@graph"])
+            else:
+                candidates.append(data)
+        for d in candidates:
+            if isinstance(d, dict) and d.get("@type") == "Book":
+                return d
+    return None
+
+
+def _clean_kyobo_author(raw: str) -> str:
+    """ '알랭 드 보통 지음 | 정영목 번역' → '알랭 드 보통' 처럼
+    여러 명이 묶여 있는 author 문자열에서 대표 저자만 깔끔하게 뽑아냅니다."""
+    if not raw:
+        return ""
+    # '|' 또는 ',' 로 묶인 첫 인물만
+    first = raw.split("|")[0].split(",")[0].strip()
+    # '지음', '저자', '저', '엮음', '편저', '옮김', '번역', '글' 같은 꼬리표 제거
+    first = re.sub(r"\s+(지음|저자|저|엮음|편저|옮김|번역|글)\s*$", "", first).strip()
+    return first
+
+
 def _parse_kyobo_search_items(html: str, max_results: int) -> list[dict]:
     """
     교보문고 검색 결과 페이지에서 각 prod_item 블록마다
@@ -330,27 +377,77 @@ def _fetch_kyobo_book(
     except Exception:
         return fallback  # 상세가 실패해도 검색 메타로 보여줌
 
-    # 제목: og:title 을 1순위로 (표준 OpenGraph 이라 바뀔 가능성이 낮음)
-    title = _pick_first_clean([
-        _search(r'<meta property="og:title" content="([^"]+)"', detail),
-        _search(r'<span[^>]*class="[^"]*prod_title[^"]*"[^>]*>([^<]+)</span>', detail),
-        _search(r'<h1[^>]*class="[^"]*title[^"]*"[^>]*>([^<]+)</h1>', detail),
-        _search(r'<title>([^<|]+)', detail),
-    ])
+    # ① 1순위: JSON-LD Book 블록 — name/image/author/publisher/genre 가
+    #          전부 깔끔하게 들어 있어서 여기서 거의 모든 필드를 채울 수 있어요.
+    title = ""
+    author = ""
+    publisher = ""
+    cover = ""
+    category = ""
+    category_full = ""
 
-    # 표지: og:image 1순위
-    cover = (
-        _search(r'<meta property="og:image" content="([^"]+)"', detail)
-        or _search(r'<meta name="twitter:image" content="([^"]+)"', detail)
-    )
+    ld_book = _extract_kyobo_jsonld(detail)
+    if ld_book:
+        title = (ld_book.get("name") or "").strip()
+        cover = (ld_book.get("image") or "").strip()
 
-    author = (
-        _search(r'<meta name="author" content="([^"]+)"', detail)
-        or _search(r'data-author="([^"]+)"', detail)
-    )
-    publisher = _search(r'data-publisher="([^"]+)"', detail)
+        raw_author = ld_book.get("author") or ""
+        if isinstance(raw_author, dict):
+            raw_author = raw_author.get("name", "")
+        elif isinstance(raw_author, list) and raw_author:
+            first = raw_author[0]
+            raw_author = first.get("name", "") if isinstance(first, dict) else str(first)
+        author = _clean_kyobo_author(str(raw_author))
 
-    category, full = _extract_kyobo_category(detail)
+        raw_pub = ld_book.get("publisher") or ""
+        if isinstance(raw_pub, dict):
+            raw_pub = raw_pub.get("name", "")
+        publisher = str(raw_pub).strip()
+
+        # 교보문고에서는 genre 가 곧 카테고리(예: "시/에세이")여서 그대로 씁니다.
+        genre = (ld_book.get("genre") or "").strip()
+        if genre:
+            category = genre
+            category_full = genre
+
+    # ② 2순위 보강: og:title / og:image — JSON-LD 가 없을 때만 사용
+    if not title or not cover:
+        # 교보문고의 og:title 포맷 → "책제목 | 저자 - 교보문고"
+        og_title = _search(r'<meta property="og:title" content="([^"]+)"', detail)
+        if not title and og_title:
+            if " | " in og_title:
+                left, _, right = og_title.partition(" | ")
+                title = left.strip()
+                if not author:
+                    right = re.sub(r"\s*-\s*교보문고\s*$", "", right).strip()
+                    author = right
+            else:
+                title = og_title.strip()
+        if not cover:
+            cover = (
+                _search(r'<meta property="og:image" content="([^"]+)"', detail)
+                or _search(r'<meta name="twitter:image" content="([^"]+)"', detail)
+            )
+
+    if not title:
+        title = _pick_first_clean([
+            _search(r'<span[^>]*class="[^"]*prod_title[^"]*"[^>]*>([^<]+)</span>', detail),
+            _search(r'<h1[^>]*class="[^"]*title[^"]*"[^>]*>([^<]+)</h1>', detail),
+            _search(r'<title>([^<|]+)', detail),
+        ])
+
+    if not author:
+        author = (
+            _search(r'<meta name="author" content="([^"]+)"', detail)
+            or _search(r'data-author="([^"]+)"', detail)
+        )
+        author = _clean_kyobo_author(author)
+    if not publisher:
+        publisher = _search(r'data-publisher="([^"]+)"', detail)
+
+    # ③ 카테고리: JSON-LD genre 가 없을 때만 breadcrumb 등으로 폴백
+    if not category:
+        category, category_full = _extract_kyobo_category(detail)
 
     book = {
         "title": _unescape(title),
@@ -359,7 +456,7 @@ def _fetch_kyobo_book(
         "cover": cover,
         "link": detail_url,
         "category": category,
-        "category_full": full,
+        "category_full": category_full,
     }
     return _merge_fallback(book, fallback)
 
