@@ -121,7 +121,19 @@ def _fetch_aladin_book(
     # JSON-LD 안의 genre / name / author / image 를 하나씩 빼냅니다.
     genre = _search(r'"genre"\s*:\s*"([^"]+)"', detail)
     name = _search(r'"name"\s*:\s*"([^"]+)"', detail)
+
+    # author 는 단순 문자열일 수도 있고, {"@type":"Person","name":"..."} 객체일 수도 있어요.
     author = _search(r'"author"\s*:\s*"([^"]+)"', detail)
+    if not author:
+        # 객체/배열 형태: "author": { ... "name": "저자명" ... }
+        auth_m = re.search(
+            r'"author"\s*:\s*[\[\{][^{}\[\]]*"name"\s*:\s*"([^"]+)"',
+            detail,
+            re.DOTALL,
+        )
+        if auth_m:
+            author = auth_m.group(1)
+
     publisher = _search(r'"publisher"\s*:\s*"([^"]+)"', detail)
     image = _search(r'"image"\s*:\s*"([^"]+)"', detail)
 

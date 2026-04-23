@@ -94,6 +94,32 @@
       background: #fff;
     }
     .search-box input::placeholder { color: #9ca3af; }
+
+    /* 인풋 + 클리어 버튼 래퍼 */
+    .input-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+    .input-wrap input {
+      padding-right: 32px; /* 버튼 공간 확보 */
+    }
+    .clear-btn {
+      position: absolute;
+      right: 10px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: #9ca3af;
+      font-size: 15px;
+      line-height: 1;
+      padding: 2px 4px;
+      border-radius: 50%;
+      display: none; /* 기본 숨김 */
+      transition: color 0.15s;
+    }
+    .clear-btn:hover { color: var(--ink); }
+    .input-wrap.has-value .clear-btn { display: block; }
     .search-box button {
       align-self: end;
       border: none;
@@ -329,15 +355,21 @@
     <div class="search-box">
       <div class="field">
         <label for="bookInput">도서명</label>
-        <input id="bookInput" type="text"
-               placeholder="예: 불안"
-               autocomplete="off" />
+        <div class="input-wrap" id="bookWrap">
+          <input id="bookInput" type="text"
+                 placeholder="예: 불안"
+                 autocomplete="off" />
+          <button class="clear-btn" id="clearBook" type="button" aria-label="지우기">×</button>
+        </div>
       </div>
       <div class="field">
         <label for="authorInput">저자명 (선택)</label>
-        <input id="authorInput" type="text"
-               placeholder="예: 알랭 드 보통"
-               autocomplete="off" />
+        <div class="input-wrap" id="authorWrap">
+          <input id="authorInput" type="text"
+                 placeholder="예: 알랭 드 보통"
+                 autocomplete="off" />
+          <button class="clear-btn" id="clearAuthor" type="button" aria-label="지우기">×</button>
+        </div>
       </div>
       <button id="searchBtn">검색</button>
     </div>
@@ -400,6 +432,20 @@
       kyobo:  document.querySelector('.card[data-site="kyobo"]'),
       yes24:  document.querySelector('.card[data-site="yes24"]'),
     };
+
+    // 클리어 버튼 설정
+    function setupClearBtn(input, wrap, clearBtn) {
+      const update = () => wrap.classList.toggle("has-value", input.value.length > 0);
+      input.addEventListener("input", update);
+      clearBtn.addEventListener("click", () => {
+        input.value = "";
+        update();
+        input.focus();
+      });
+      update(); // 초기 상태 반영
+    }
+    setupClearBtn(titleInput, document.getElementById("bookWrap"), document.getElementById("clearBook"));
+    setupClearBtn(authorInput, document.getElementById("authorWrap"), document.getElementById("clearAuthor"));
 
     btn.addEventListener("click", search);
     [titleInput, authorInput].forEach((el) => {
