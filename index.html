@@ -102,24 +102,27 @@
       align-items: center;
     }
     .input-wrap input {
-      padding-right: 32px; /* 버튼 공간 확보 */
+      padding-right: 28px;
     }
     .clear-btn {
       position: absolute;
-      right: 10px;
+      right: 9px;
       background: none;
       border: none;
       cursor: pointer;
-      color: #9ca3af;
-      font-size: 15px;
+      color: #c0c4cc;
+      font-size: 13px;
       line-height: 1;
-      padding: 2px 4px;
-      border-radius: 50%;
-      display: none; /* 기본 숨김 */
-      transition: color 0.15s;
+      padding: 0;
+      width: 16px;
+      height: 16px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      transition: color 0.12s;
     }
-    .clear-btn:hover { color: var(--ink); }
-    .input-wrap.has-value .clear-btn { display: block; }
+    .clear-btn:hover { color: #6b7280; }
+    .input-wrap.has-value .clear-btn { display: flex; }
     .search-box button {
       align-self: end;
       border: none;
