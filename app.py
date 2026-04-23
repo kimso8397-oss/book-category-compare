@@ -764,13 +764,55 @@ def api_debug_kyobo():
         }
         ids = list(dict.fromkeys(re.findall(r"/detail/([A-Z]?\d+)", search_html)))[:10]
         info["detail_ids_found"] = ids
-        # /detail/ 로 시작하는 링크 전체 샘플 — 패턴 진단용
         info["any_detail_links"] = list(dict.fromkeys(
             re.findall(r'/detail/([^\s"\'<>?#]+)', search_html)
         ))[:20]
         info["search_no_result_hint"] = any(
             kw in search_html
             for kw in ("검색결과가 없", "검색 결과가 없", "일치하는 상품이 없")
+        )
+
+        # --- 상품 카드 구조 진단 ---
+        # body 안에서 책과 관련돼 보이는 href 샘플을 수집합니다.
+        body_start = search_html.find("<body")
+        body_section = (
+            search_html[body_start : body_start + 40000]
+            if body_start > -1
+            else search_html[:40000]
+        )
+        hrefs = re.findall(r'href="([^"]+)"', body_section)
+        book_hrefs = [
+            h for h in hrefs
+            if any(k in h for k in ("kyobobook", "/detail", "/ebook", "/sam", "/product", "/store"))
+            and not h.endswith((".css", ".js", ".png", ".jpg", ".svg", ".ico"))
+        ]
+        info["book_href_samples"] = list(dict.fromkeys(book_hrefs))[:30]
+
+        # 첫 번째 상품 카드 블록 통째로. prod_item 또는 유사한 class 를 가진
+        # li/div 블록 하나만 잘라서 보여줍니다. 이걸 보면 실제 상품 URL 패턴,
+        # data-* 속성, 제목 마크업이 모두 드러납니다.
+        first_prod = None
+        for pattern in (
+            r'<li[^>]*class="[^"]*prod_item[^"]*"[^>]*>.*?</li>',
+            r'<li[^>]*class="[^"]*prod[^"]*"[^>]*>.*?</li>',
+            r'<div[^>]*class="[^"]*prod_list_area[^"]*"[^>]*>.*?</div>\s*</section>',
+            r'<article[^>]*>.*?</article>',
+            r'<div[^>]*class="[^"]*item[^"]*"[^>]*>.*?</div>',
+        ):
+            m = re.search(pattern, body_section, re.DOTALL)
+            if m:
+                first_prod = m.group(0)[:3500]
+                break
+        info["first_prod_block"] = first_prod
+
+        # 검색 결과 영역으로 추정되는 컨테이너만 잘라서도 한번:
+        result_area = re.search(
+            r'<(?:section|div)[^>]*class="[^"]*(?:search_result|result_area|prod_list_area|prod_area)[^"]*"[^>]*>(.*?)</(?:section|div)>',
+            body_section,
+            re.DOTALL,
+        )
+        info["result_area_head"] = (
+            result_area.group(1)[:3000] if result_area else None
         )
     except Exception as e:
         info["search_error"] = f"{type(e).__name__}: {e}"
