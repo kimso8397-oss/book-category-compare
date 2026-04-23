@@ -639,6 +639,65 @@ def index():
     return send_from_directory(".", "index.html")
 
 
+@app.route("/api/debug/kyobo")
+def api_debug_kyobo():
+    """
+    교보문고가 서버(Render)에 뭘 돌려주고 있는지 그대로 보여주는 진단 엔드포인트.
+    브라우저에서 /api/debug/kyobo?q=불안 으로 호출하면,
+    - 검색 페이지 HTTP 상태/길이/앞 1500자
+    - 찾은 /detail/S... 링크 개수
+    - 첫 상세 페이지 HTTP 상태/길이/앞 2000자
+    - JSON-LD Book 블록을 찾았는지, og:title 이 있는지
+    를 JSON 으로 돌려줍니다. 이 결과만 보면 교보문고가 봇 차단을
+    하는 건지, 구조가 바뀐 건지 바로 판별 가능합니다.
+    """
+    q = (request.args.get("q") or "불안").strip()
+    info: dict = {"query": q}
+    session = _new_session()
+    search_url = (
+        "https://search.kyobobook.co.kr/search"
+        f"?keyword={urllib.parse.quote(q)}&gbCode=TOT&target=total"
+    )
+    info["search_url"] = search_url
+    try:
+        r = session.get(search_url, timeout=TIMEOUT)
+        r.encoding = r.apparent_encoding or r.encoding
+        search_html = r.text
+        info["search_status"] = r.status_code
+        info["search_length"] = len(search_html)
+        info["search_head_1500"] = search_html[:1500]
+        ids = list(dict.fromkeys(re.findall(r"/detail/(S\d+)", search_html)))[:5]
+        info["detail_ids_found"] = ids
+    except Exception as e:
+        info["search_error"] = f"{type(e).__name__}: {e}"
+        return jsonify(info)
+
+    if not ids:
+        return jsonify(info)
+
+    first_id = ids[0]
+    detail_url = f"https://product.kyobobook.co.kr/detail/{first_id}"
+    info["detail_url"] = detail_url
+    try:
+        r2 = session.get(detail_url, headers={"Referer": search_url}, timeout=TIMEOUT)
+        r2.encoding = r2.apparent_encoding or r2.encoding
+        detail_html = r2.text
+        info["detail_status"] = r2.status_code
+        info["detail_length"] = len(detail_html)
+        info["detail_head_2000"] = detail_html[:2000]
+        info["has_jsonld_book"] = _extract_kyobo_jsonld(detail_html) is not None
+        og = _search(r'<meta property="og:title" content="([^"]+)"', detail_html)
+        info["og_title"] = og
+        info["has_breadcrumb_keyword"] = "breadcrumb" in detail_html.lower()
+        info["has_captcha_keyword"] = any(
+            kw in detail_html.lower()
+            for kw in ("captcha", "접속이 차단", "접속이차단", "bot", "blocked", "access denied")
+        )
+    except Exception as e:
+        info["detail_error"] = f"{type(e).__name__}: {e}"
+    return jsonify(info)
+
+
 @app.route("/api/search")
 def api_search():
     title = (request.args.get("q") or "").strip()
