@@ -423,18 +423,20 @@ def _extract_kyobo_category(detail: str, is_ebook: bool = False) -> tuple[str, s
     parts: list[str] = []
 
     # 0) eBook 전용: "이 상품이 속한 분야" 섹션 — 가장 정확한 출처
+    #    경로가 <a> 링크가 아닌 일반 텍스트(예: "eBook > IT/프로그래밍 > ...")로
+    #    렌더링되는 경우가 많아서, HTML 태그를 벗겨낸 뒤 텍스트에서 추출합니다.
     if is_ebook and not parts:
-        owned = _search(
-            r'이\s*상품이\s*속한\s*분야.*?<ul[^>]*>(.*?)</ul>',
-            detail,
-            re.DOTALL,
-        )
-        if owned:
-            # 첫 번째 <li> 안의 링크들이 이 책의 카테고리 경로
-            li_m = re.search(r'<li[^>]*>(.*?)</li>', owned, re.DOTALL)
-            if li_m:
-                found = re.findall(r'>([^<>]+)</a>', li_m.group(1))
-                parts = _clean_parts(found)
+        pos = detail.find('이 상품이 속한 분야')
+        if pos >= 0:
+            snippet = detail[pos:pos + 2000]
+            # 태그 제거 후 HTML 엔티티 디코드
+            plain = html_mod.unescape(re.sub(r'<[^>]+>', ' ', snippet))
+            # "eBook > ..." 패턴이 시작되는 첫 번째 경로 추출
+            m = re.search(r'(eBook(?:\s*>\s*[^\n<>]+)+)', plain)
+            if m:
+                path_text = m.group(1)
+                candidates = [p.strip() for p in path_text.split('>') if p.strip()]
+                parts = _clean_parts(candidates)
 
     # 1) breadcrumb_list (일반 도서 구조)
     if not parts:
