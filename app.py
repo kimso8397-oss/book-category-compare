@@ -407,23 +407,48 @@ def _parse_kyobo_search_items(html: str, max_results: int) -> list[dict]:
     return items
 
 
-def _extract_kyobo_category(detail: str) -> tuple[str, str]:
+def _extract_kyobo_category(detail: str, is_ebook: bool = False) -> tuple[str, str]:
     """교보문고 상세 페이지에서 카테고리 경로를 여러 패턴으로 시도해 뽑습니다.
-    반환: (대표 카테고리, 전체 경로)"""
+    반환: (대표 카테고리, 전체 경로)
+
+    is_ebook=True 이면 ebook-product 도메인 페이지로 판단하고,
+    "이 상품이 속한 분야" 섹션을 먼저 탐색합니다.
+    """
+    MAX_DEPTH = 6  # 이 이상이면 사이드 내비게이션 메뉴를 잘못 잡은 것으로 판단
+
+    def _clean_parts(raw: list[str]) -> list[str]:
+        cleaned = [p.strip() for p in raw if p.strip() and p.upper() != "HOME"]
+        return cleaned if len(cleaned) <= MAX_DEPTH else []
+
     parts: list[str] = []
 
-    # 1) breadcrumb_list (예전 구조)
-    for pattern in (
-        r'<ol[^>]*class="[^"]*breadcrumb_list[^"]*"[^>]*>(.*?)</ol>',
-        r'<[ou]l[^>]*class="[^"]*breadcrumb[^"]*"[^>]*>(.*?)</[ou]l>',
-        r'<nav[^>]*class="[^"]*breadcrumb[^"]*"[^>]*>(.*?)</nav>',
-    ):
-        bc = _search(pattern, detail, re.DOTALL)
-        if bc:
-            found = re.findall(r">([^<>]+)</a>", bc)
-            parts = [p.strip() for p in found if p.strip() and p.upper() != "HOME"]
-            if parts:
-                break
+    # 0) eBook 전용: "이 상품이 속한 분야" 섹션 — 가장 정확한 출처
+    if is_ebook and not parts:
+        owned = _search(
+            r'이\s*상품이\s*속한\s*분야.*?<ul[^>]*>(.*?)</ul>',
+            detail,
+            re.DOTALL,
+        )
+        if owned:
+            # 첫 번째 <li> 안의 링크들이 이 책의 카테고리 경로
+            li_m = re.search(r'<li[^>]*>(.*?)</li>', owned, re.DOTALL)
+            if li_m:
+                found = re.findall(r'>([^<>]+)</a>', li_m.group(1))
+                parts = _clean_parts(found)
+
+    # 1) breadcrumb_list (일반 도서 구조)
+    if not parts:
+        for pattern in (
+            r'<ol[^>]*class="[^"]*breadcrumb_list[^"]*"[^>]*>(.*?)</ol>',
+            r'<[ou]l[^>]*class="[^"]*breadcrumb[^"]*"[^>]*>(.*?)</[ou]l>',
+            r'<nav[^>]*class="[^"]*breadcrumb[^"]*"[^>]*>(.*?)</nav>',
+        ):
+            bc = _search(pattern, detail, re.DOTALL)
+            if bc:
+                found = re.findall(r">([^<>]+)</a>", bc)
+                parts = _clean_parts(found)
+                if parts:
+                    break
 
     # 2) "카테고리 분류/위치" 섹션 텍스트
     if not parts:
@@ -434,7 +459,7 @@ def _extract_kyobo_category(detail: str) -> tuple[str, str]:
         )
         if cat_area:
             found = re.findall(r">([^<>]+)</a>", cat_area)
-            parts = [p.strip() for p in found if p.strip() and p.upper() != "HOME"]
+            parts = _clean_parts(found)
 
     # 3) JSON-LD BreadcrumbList
     if not parts:
@@ -445,7 +470,7 @@ def _extract_kyobo_category(detail: str) -> tuple[str, str]:
         )
         if ld and "BreadcrumbList" in ld:
             names = re.findall(r'"name"\s*:\s*"([^"]+)"', ld)
-            parts = [n.strip() for n in names if n.strip() and n.upper() != "HOME"]
+            parts = _clean_parts(names)
 
     if not parts:
         return "", ""
@@ -517,7 +542,11 @@ def _fetch_kyobo_book(
         publisher = str(raw_pub).strip()
 
         # 교보문고에서는 genre 가 곧 카테고리(예: "시/에세이")여서 그대로 씁니다.
-        genre = (ld_book.get("genre") or "").strip()
+        # eBook 페이지에서는 genre 가 리스트로 올 수 있어서 첫 번째 값만 사용합니다.
+        raw_genre = ld_book.get("genre") or ""
+        if isinstance(raw_genre, list):
+            raw_genre = raw_genre[0] if raw_genre else ""
+        genre = str(raw_genre).strip()
         if genre:
             category = genre
             category_full = genre
@@ -559,7 +588,8 @@ def _fetch_kyobo_book(
 
     # ③ 카테고리: JSON-LD genre 가 없을 때만 breadcrumb 등으로 폴백
     if not category:
-        category, category_full = _extract_kyobo_category(detail)
+        is_ebook = detail_url.startswith("https://ebook-product.")
+        category, category_full = _extract_kyobo_category(detail, is_ebook=is_ebook)
 
     book = {
         "title": _unescape(title),
