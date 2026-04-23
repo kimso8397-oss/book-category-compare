@@ -317,43 +317,69 @@ def _clean_kyobo_author(raw: str) -> str:
 
 def _parse_kyobo_search_items(html: str, max_results: int) -> list[dict]:
     """
-    교보문고 검색 결과 페이지에서 /detail/S... 링크를 순서대로 찾고,
-    각 링크 주변 HTML 윈도우에서 제목/표지를 긁어 옵니다.
+    교보문고 검색 결과 페이지에서 상품 링크를 찾고,
+    각 링크 주변 HTML 윈도우에서 제목/저자/출판사/표지를 긁어 옵니다.
 
-    기존에는 li.prod_item 블록에만 의존했는데, 교보문고가 class 이름을
-    조금만 바꿔도 전부 깨져서 — 지금은 class 구조에 덜 의존하는 방식으로
-    바꿨습니다. 실제 제목/카테고리는 상세 페이지의 JSON-LD 에서
-    최종적으로 덮어써지므로, 여기서는 '못 해도 빈값 대신 뭔가라도 보여주기'
-    용 fallback 정도의 역할만 합니다.
+    지원하는 두 가지 URL 패턴:
+      - 일반 도서: product.kyobobook.co.kr/detail/S000...
+      - eBook:     ebook-product.kyobobook.co.kr/dig/epd/ebook/E000...
+
+    검색 HTML 에는 이미 제목(cmdtName_<id> span), 저자(class="author rep"),
+    출판사(prod_publish) 가 모두 들어 있어서, 상세 페이지는 카테고리만 따로
+    가져오면 됩니다. 여기서 최대한 정확히 뽑아 둘수록 상세 페이지 호출이
+    실패했을 때 fallback 품질이 높아집니다.
     """
     items: list[dict] = []
     seen: set[str] = set()
 
-    for m in re.finditer(r"/detail/([A-Z]?\d+)", html):
+    # 두 패턴을 모두 찾아서 HTML 상 등장 순서대로 정렬합니다.
+    all_matches: list[tuple[int, re.Match, str, str]] = []  # (pos, match, iid, link)
+
+    for m in re.finditer(r'product\.kyobobook\.co\.kr/detail/(S\d+)', html):
         iid = m.group(1)
+        link = f"https://product.kyobobook.co.kr/detail/{iid}"
+        all_matches.append((m.start(), m, iid, link))
+
+    for m in re.finditer(
+        r'ebook-product\.kyobobook\.co\.kr/dig/epd/ebook/(E\d+)', html
+    ):
+        iid = m.group(1)
+        link = f"https://ebook-product.kyobobook.co.kr/dig/epd/ebook/{iid}"
+        all_matches.append((m.start(), m, iid, link))
+
+    all_matches.sort(key=lambda x: x[0])
+
+    for _pos, m, iid, link in all_matches:
         if iid in seen:
             continue
         seen.add(iid)
 
-        # 링크 위치 양옆으로 ~3000자 윈도우를 떠서 이 제품에 속한 마크업만 본다고 가정.
-        start = max(0, m.start() - 3000)
-        end = min(len(html), m.end() + 3000)
+        # 링크 위치 양옆으로 ~2500자 윈도우를 떠서 이 제품에 속한 마크업만 봅니다.
+        start = max(0, m.start() - 2500)
+        end = min(len(html), m.end() + 2500)
         window = html[start:end]
 
-        # 제목: 교보문고는 대개 <img alt="책제목 표지"> 형태를 써요.
-        #       '표지' 접미사가 붙은 alt 를 먼저 시도합니다.
-        title = _pick_first_clean([
-            _search(r'<img[^>]+alt="([^"]+?)\s*표지"', window),
-            _search(r'<img[^>]+alt="([^"]+?)"', window),
-            _search(r'class="prod_name"[^>]*>([^<]+)<', window),
-            _search(r'class="prod_title"[^>]*>([^<]+)<', window),
-            _search(r'<a[^>]+href="[^"]*/detail/S\d+"[^>]+title="([^"]+)"', window),
-        ])
+        # 제목 1순위: cmdtName_<id> span — 교보문고 검색 HTML 에서 가장 안정적
+        title = _search(
+            rf'class="[^"]*cmdtName_{re.escape(iid)}[^"]*"[^>]*>([^<]+)<', window
+        )
+        # 제목 폴백: img alt 표지 접미사, prod_name/prod_title class, a[title]
+        if not title:
+            title = _pick_first_clean([
+                _search(r'<img[^>]+alt="([^"]+?)\s*표지"', window),
+                _search(r'class="[^"]*prod_name[^"]*"[^>]*>([^<]+)<', window),
+                _search(r'class="[^"]*prod_title[^"]*"[^>]*>([^<]+)<', window),
+                _search(r'<a[^>]+title="([^"]+)"[^>]*>', window),
+            ])
 
+        # 저자: class="author rep" 가 가장 구체적, 없으면 prod_author/author
         author = (
-            _search(r'class="[^"]*prod_author[^"]*"[^>]*>([^<]+)<', window)
+            _search(r'class="author\s+rep"[^>]*>([^<]+)<', window)
+            or _search(r'class="[^"]*prod_author[^"]*"[^>]*>([^<]+)<', window)
             or _search(r'class="[^"]*author[^"]*"[^>]*>([^<]+)<', window)
         )
+
+        # 출판사
         publisher = _search(r'class="[^"]*prod_publish[^"]*"[^>]*>([^<]+)<', window)
 
         # 표지: lazy-load 속성들 → 일반 src 순서
@@ -373,7 +399,7 @@ def _parse_kyobo_search_items(html: str, max_results: int) -> list[dict]:
                 "author": _unescape(author),
                 "publisher": _unescape(publisher),
                 "cover": cover or "",
-                "link": f"https://product.kyobobook.co.kr/detail/{iid}",
+                "link": link,
             }
         )
         if len(items) >= max_results:
@@ -432,9 +458,13 @@ def _fetch_kyobo_book(
     """
     교보문고 상세 페이지에서 카테고리/제목/저자/표지를 뽑아옵니다.
     실패하거나 필드가 비어 있으면 검색 페이지에서 먼저 뽑아 둔 fallback 으로 채웁니다.
+
+    일반 도서(product.kyobobook.co.kr/detail/S...)와
+    eBook(ebook-product.kyobobook.co.kr/dig/epd/ebook/E...) 모두
+    검색 아이템에서 저장해 둔 link 를 그대로 상세 URL 로 사용합니다.
     """
     iid = item["id"]
-    detail_url = f"https://product.kyobobook.co.kr/detail/{iid}"
+    detail_url = item.get("link") or f"https://product.kyobobook.co.kr/detail/{iid}"
 
     fallback = {
         "title": item.get("title", ""),
@@ -558,10 +588,25 @@ def search_kyobo(query: str, max_results: int = MAX_RESULTS) -> dict:
 
     items = _parse_kyobo_search_items(html, max_results)
     if not items:
-        # 기존 방식 폴백 — prod_item 이 안 잡히면 그냥 /detail/S 링크 순으로
+        # 폴백 — _parse_kyobo_search_items 가 아무것도 못 잡은 경우.
+        # 일반 도서와 eBook 링크를 HTML 등장 순서대로 모아서 빈 아이템으로 채웁니다.
         seen: set[str] = set()
-        for m in re.finditer(r"/detail/([A-Z]?\d+)", html):
+        fallback_matches: list[tuple[int, str, str]] = []  # (pos, iid, link)
+
+        for m in re.finditer(r'product\.kyobobook\.co\.kr/detail/(S\d+)', html):
             iid = m.group(1)
+            link = f"https://product.kyobobook.co.kr/detail/{iid}"
+            fallback_matches.append((m.start(), iid, link))
+
+        for m in re.finditer(
+            r'ebook-product\.kyobobook\.co\.kr/dig/epd/ebook/(E\d+)', html
+        ):
+            iid = m.group(1)
+            link = f"https://ebook-product.kyobobook.co.kr/dig/epd/ebook/{iid}"
+            fallback_matches.append((m.start(), iid, link))
+
+        fallback_matches.sort(key=lambda x: x[0])
+        for _pos, iid, link in fallback_matches:
             if iid in seen:
                 continue
             seen.add(iid)
@@ -572,7 +617,7 @@ def search_kyobo(query: str, max_results: int = MAX_RESULTS) -> dict:
                     "author": "",
                     "publisher": "",
                     "cover": "",
-                    "link": f"https://product.kyobobook.co.kr/detail/{iid}",
+                    "link": link,
                 }
             )
             if len(items) >= max_results:
