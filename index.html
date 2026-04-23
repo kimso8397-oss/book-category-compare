@@ -123,7 +123,7 @@
     }
     .clear-btn:hover { color: #6b7280; }
     .input-wrap.has-value .clear-btn { display: flex; }
-    .search-box button {
+    .search-box button:not(.clear-btn) {
       align-self: end;
       border: none;
       background: var(--accent);
@@ -137,10 +137,10 @@
       transition: background 0.15s ease;
     }
     @media (max-width: 640px) {
-      .search-box button { width: 100%; }
+      .search-box button:not(.clear-btn) { width: 100%; }
     }
-    .search-box button:hover { background: var(--accent-hover); }
-    .search-box button:disabled { background: #9ca3af; cursor: not-allowed; }
+    .search-box button:not(.clear-btn):hover { background: var(--accent-hover); }
+    .search-box button:not(.clear-btn):disabled { background: #9ca3af; cursor: not-allowed; }
 
     .status {
       margin: 20px 0 8px;
@@ -362,7 +362,7 @@
           <input id="bookInput" type="text"
                  placeholder="예: 불안"
                  autocomplete="off" />
-          <button class="clear-btn" id="clearBook" type="button" aria-label="지우기">✕</button>
+          <button class="clear-btn" id="clearBook" type="button" aria-label="지우기"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg"><line x1="1.5" y1="1.5" x2="8.5" y2="8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="8.5" y1="1.5" x2="1.5" y2="8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
         </div>
       </div>
       <div class="field">
@@ -371,7 +371,7 @@
           <input id="authorInput" type="text"
                  placeholder="예: 알랭 드 보통"
                  autocomplete="off" />
-          <button class="clear-btn" id="clearAuthor" type="button" aria-label="지우기">✕</button>
+          <button class="clear-btn" id="clearAuthor" type="button" aria-label="지우기"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg"><line x1="1.5" y1="1.5" x2="8.5" y2="8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="8.5" y1="1.5" x2="1.5" y2="8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
         </div>
       </div>
       <button id="searchBtn">검색</button>
