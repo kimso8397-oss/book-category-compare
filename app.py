@@ -329,7 +329,7 @@ def _parse_kyobo_search_items(html: str, max_results: int) -> list[dict]:
     items: list[dict] = []
     seen: set[str] = set()
 
-    for m in re.finditer(r"/detail/([A-Z]\d+)", html):
+    for m in re.finditer(r"/detail/([A-Z]?\d+)", html):
         iid = m.group(1)
         if iid in seen:
             continue
@@ -560,7 +560,7 @@ def search_kyobo(query: str, max_results: int = MAX_RESULTS) -> dict:
     if not items:
         # 기존 방식 폴백 — prod_item 이 안 잡히면 그냥 /detail/S 링크 순으로
         seen: set[str] = set()
-        for m in re.finditer(r"/detail/([A-Z]\d+)", html):
+        for m in re.finditer(r"/detail/([A-Z]?\d+)", html):
             iid = m.group(1)
             if iid in seen:
                 continue
@@ -762,7 +762,7 @@ def api_debug_kyobo():
             k: v for k, v in hdrs.items()
             if k.lower() in ("content-length", "content-type", "server", "x-cache")
         }
-        ids = list(dict.fromkeys(re.findall(r"/detail/([A-Z]\d+)", search_html)))[:10]
+        ids = list(dict.fromkeys(re.findall(r"/detail/([A-Z]?\d+)", search_html)))[:10]
         info["detail_ids_found"] = ids
         # /detail/ 로 시작하는 링크 전체 샘플 — 패턴 진단용
         info["any_detail_links"] = list(dict.fromkeys(
