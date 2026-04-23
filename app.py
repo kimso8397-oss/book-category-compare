@@ -422,21 +422,29 @@ def _extract_kyobo_category(detail: str, is_ebook: bool = False) -> tuple[str, s
 
     parts: list[str] = []
 
-    # 0) eBook 전용: "이 상품이 속한 분야" 섹션 — 가장 정확한 출처
-    #    경로가 <a> 링크가 아닌 일반 텍스트(예: "eBook > IT/프로그래밍 > ...")로
-    #    렌더링되는 경우가 많아서, HTML 태그를 벗겨낸 뒤 텍스트에서 추출합니다.
+    # 0) eBook 전용: hidden input 필드에서 카테고리 추출
+    #    ebook-product 상세 페이지는 카테고리 목록을 JS로 동적 렌더링하지만,
+    #    largeCtgrName / middleCtgrName / subCtgrName hidden input 에는
+    #    서버 사이드에서 미리 값이 채워져 있어서 가장 안정적인 출처입니다.
     if is_ebook and not parts:
-        pos = detail.find('이 상품이 속한 분야')
-        if pos >= 0:
-            snippet = detail[pos:pos + 2000]
-            # 태그 제거 후 HTML 엔티티 디코드
-            plain = html_mod.unescape(re.sub(r'<[^>]+>', ' ', snippet))
-            # "eBook > ..." 패턴이 시작되는 첫 번째 경로 추출
-            m = re.search(r'(eBook(?:\s*>\s*[^\n<>]+)+)', plain)
-            if m:
-                path_text = m.group(1)
-                candidates = [p.strip() for p in path_text.split('>') if p.strip()]
-                parts = _clean_parts(candidates)
+        def _hidden_val(id_name: str) -> str:
+            # <input type="hidden" value="..." id="..."> 또는 속성 순서 반대
+            return (
+                _search(rf'<input[^>]+id="{id_name}"[^>]+value="([^"]*)"', detail)
+                or _search(rf'<input[^>]+value="([^"]*)"[^>]+id="{id_name}"', detail)
+            )
+        large = _hidden_val("largeCtgrName")   # 예: IT/프로그래밍
+        middle = _hidden_val("middleCtgrName")  # 예: 코딩/프로그래밍/언어
+        sub = _hidden_val("subCtgrName")        # 예: (비어 있는 경우 많음)
+        if large or middle:
+            path_parts = ["eBook"]
+            if large:
+                path_parts.append(large)
+            if middle:
+                path_parts.append(middle)
+            if sub:
+                path_parts.append(sub)
+            parts = path_parts
 
     # 1) breadcrumb_list (일반 도서 구조)
     if not parts:
